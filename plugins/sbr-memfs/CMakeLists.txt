@@ -7,4 +7,4 @@
 list(APPEND SABRE_PLUGIN_C_FLAGS "-Wall" "-Werror" "-Wno-erro=unused-parameter")
 
 sabre_add_plugin(sbr-memfs
-  identity.c)
+  main.c)
