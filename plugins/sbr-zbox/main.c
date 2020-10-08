@@ -4,6 +4,7 @@
  *
  *  SPDX-License-Identifier: GPL-3.0-or-later
  */
+
 #include "real_syscall.h"
 #include "sbr_api_defs.h"
 
@@ -53,11 +54,11 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   zbox_file *file = &zfile_map[zfile_map_size];
 
   if (zbox_repo_path_exists(repo, pathname)) {
-    // open the existing file
+    // Open the existing file.
     int ret = zbox_repo_open_file(file, repo, pathname);
     assert(!ret);
   } else {
-    // create file
+    // Create the file.
     char *pathname_dup = strdup(pathname);
     assert(pathname_dup != NULL);
 
@@ -67,26 +68,26 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
 
     ret = zbox_repo_create_file(file, repo, pathname);
     assert(!ret);
-  }
 
-  // If file exists in the real FS we need to copy it's content.
-  if (access(pathname, F_OK) != -1) {
-    // TODO:
-    // https://eklausmeier.wordpress.com/2016/02/03/performance-comparison-mmap-versus-read-versus-fread/
-    FILE *real_file = fopen(pathname, "rb");
-    fseek(real_file, 0, SEEK_END);
-    long fsize = ftell(real_file);
-    rewind(real_file);
-    char *buf = (char *)malloc(sizeof(char) * (fsize + 1));
-    size_t result = fread(buf, sizeof(char), fsize, real_file);
-    assert(result == fsize);
-    buf[fsize] = '\0';
-    fclose(real_file);
+    // If file exists in the real FS we need to copy it's content.
+    if (access(pathname, F_OK) != -1) {
+      // TODO:
+      // https://eklausmeier.wordpress.com/2016/02/03/performance-comparison-mmap-versus-read-versus-fread/
+      FILE *real_file = fopen(pathname, "rb");
+      fseek(real_file, 0, SEEK_END);
+      long fsize = ftell(real_file);
+      rewind(real_file);
+      char *buf = (char *)malloc(sizeof(char) * (fsize + 1));
+      size_t result = fread(buf, sizeof(char), fsize, real_file);
+      assert(result == fsize);
+      buf[fsize] = '\0';
+      fclose(real_file);
 
-    int ret = zbox_file_write(*file, (const unsigned char *)buf, fsize);
-    assert(ret == fsize);
+      int ret = zbox_file_write(*file, (const unsigned char *)buf, fsize);
+      assert(ret == fsize);
 
-    free(buf);
+      free(buf);
+    }
   }
 
   return zfile_map_size + fd_offset;
@@ -158,6 +159,7 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                          ret_addr);
   }
 
+  // TODO: Switch to a switch
   if (sc_no == SYS_openat) {
     return iopenat(arg1, (const char *)arg2, arg3, arg4);
   } else if (sc_no == SYS_lseek) {
