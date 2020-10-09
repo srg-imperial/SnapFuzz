@@ -85,6 +85,8 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
 
       int ret = zbox_file_write(*file, (const unsigned char *)buf, fsize);
       assert(ret == fsize);
+      ret = zbox_file_finish(*file);
+      assert(!ret);
 
       free(buf);
     }
