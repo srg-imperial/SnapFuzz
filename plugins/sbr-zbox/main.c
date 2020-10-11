@@ -53,31 +53,35 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   }
 
+  char resolved_pathname[PATH_MAX];
+  char *rv = realpath(pathname, resolved_pathname);
+  assert(rv != NULL);
+
   zfile_map_size++;
   assert(zfile_map_size < 400);
   zbox_file *file = &zfile_map[zfile_map_size];
 
-  if (zbox_repo_path_exists(repo, pathname)) {
+  if (zbox_repo_path_exists(repo, resolved_pathname)) {
     // Open the existing file.
-    int ret = zbox_repo_open_file(file, repo, pathname);
+    int ret = zbox_repo_open_file(file, repo, resolved_pathname);
     assert(!ret);
   } else {
     // Create the file.
-    char *pathname_dup = strdup(pathname);
+    char *pathname_dup = strdup(resolved_pathname);
     assert(pathname_dup != NULL);
 
     int ret = zbox_repo_create_dir_all(repo, dirname(pathname_dup));
-    assert(!ret);
+    // assert(!ret);
     free(pathname_dup);
 
-    ret = zbox_repo_create_file(file, repo, pathname);
+    ret = zbox_repo_create_file(file, repo, resolved_pathname);
     assert(!ret);
 
     // If file exists in the real FS we need to copy it's content.
-    if (access(pathname, F_OK) != -1) {
+    if (access(resolved_pathname, F_OK) != -1) {
       // TODO:
       // https://eklausmeier.wordpress.com/2016/02/03/performance-comparison-mmap-versus-read-versus-fread/
-      FILE *real_file = fopen(pathname, "rb");
+      FILE *real_file = fopen(resolved_pathname, "rb");
       fseek(real_file, 0, SEEK_END);
       long fsize = ftell(real_file);
       rewind(real_file);
