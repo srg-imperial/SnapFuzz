@@ -16,6 +16,8 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/limits.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,6 +160,31 @@ int ifstat(int fd, struct stat *statbuf) {
   return real_syscall(SYS_fstat, fd, (long)statbuf, 0, 0, 0, 0);
 }
 
+int iunlink(const char *pathname) {
+  char resolved_pathname[PATH_MAX];
+  char *rv = realpath(pathname, resolved_pathname);
+  assert(rv != NULL);
+
+  int rc = zbox_repo_remove_file(resolved_pathname, repo);
+  assert(rc == 0);
+
+  return rc;
+}
+
+// TODO: Support AT_REMOVEDIR
+int iunlinkat(int dirfd, const char *pathname, int flags) {
+  assert((flags & AT_REMOVEDIR) == 0);
+
+  char resolved_pathname[PATH_MAX];
+  char *rv = realpath(pathname, resolved_pathname);
+  assert(rv != NULL);
+
+  int rc = zbox_repo_remove_file(resolved_pathname, repo);
+  assert(rc == 0);
+
+  return rc;
+}
+
 static int sbrsocket = -1;
 static int childlistensocket = -1;
 static int childacceptsocket = -1;
@@ -287,6 +314,10 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     return iclose(arg1);
   } else if (sc_no == SYS_fstat) {
     return ifstat(arg1, (struct stat *)arg2);
+  } else if (sc_no == SYS_unlink) {
+    return iunlink((const char *)arg1);
+  } else if (sc_no == SYS_unlinkat) {
+    return iunlinkat(arg1, (const char *)arg2, arg3);
   }
   // Networking
   else if (sc_no == SYS_socket) {
