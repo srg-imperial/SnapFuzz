@@ -113,7 +113,10 @@ ssize_t iread(int fd, void *buf, size_t count) {
 
 ssize_t iwrite(int fd, const void *buf, size_t count) {
   if (fd >= 400) {
-    return zbox_file_write(zfile_map[fd - fd_offset], buf, count);
+    ssize_t rc = zbox_file_write(zfile_map[fd - fd_offset], buf, count);
+    int ret = zbox_file_finish(zfile_map[fd - fd_offset]);
+    assert(!ret);
+    return rc;
   }
   return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
 }
