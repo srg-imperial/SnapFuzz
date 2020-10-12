@@ -55,7 +55,10 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
 
   char resolved_pathname[PATH_MAX];
   char *rv = realpath(pathname, resolved_pathname);
-  assert(rv != NULL);
+  if (rv == NULL && errno != ENOENT) {
+    perror("realpath() failed");
+    exit(EXIT_FAILURE);
+  }
 
   zfile_map_size++;
   assert(zfile_map_size < 400);
@@ -167,7 +170,10 @@ int ifstat(int fd, struct stat *statbuf) {
 int iunlink(const char *pathname) {
   char resolved_pathname[PATH_MAX];
   char *rv = realpath(pathname, resolved_pathname);
-  assert(rv != NULL);
+  if (rv == NULL && errno != ENOENT) {
+    perror("realpath() failed");
+    exit(EXIT_FAILURE);
+  }
 
   int rc = zbox_repo_remove_file(resolved_pathname, repo);
   assert(rc == 0);
@@ -181,7 +187,10 @@ int iunlinkat(int dirfd, const char *pathname, int flags) {
 
   char resolved_pathname[PATH_MAX];
   char *rv = realpath(pathname, resolved_pathname);
-  assert(rv != NULL);
+  if (rv == NULL && errno != ENOENT) {
+    perror("realpath() failed");
+    exit(EXIT_FAILURE);
+  }
 
   int rc = zbox_repo_remove_file(resolved_pathname, repo);
   assert(rc == 0);
