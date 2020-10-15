@@ -9,4 +9,4 @@ list(APPEND SABRE_PLUGIN_C_FLAGS "-Wall" "-Werror" "-Wno-erro=unused-parameter")
 sabre_add_plugin(sbr-afl
   main.c)
 
-target_link_libraries(sbr-afl zbox)
+target_link_libraries(sbr-afl sqlfs-1.0)

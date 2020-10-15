@@ -30,12 +30,17 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <zbox.h>
+#include <sqlfs.h>
 
-static zbox_repo repo;
-static zbox_file zfile_map[400] = {NULL};
-static int zfile_map_size = -1;
-static int fd_offset = 400;
+#define SBR_FILES_MAX 400
+
+static sqlfs_t *sqlfs = NULL;
+static char sfile_map[SBR_FILES_MAX][PATH_MAX] = {0};
+static ssize_t sfile_map_seek[SBR_FILES_MAX] = {0};
+static int sfile_map_size = -1;
+
+// We skip some fair amount of numbers to avoid collisions.
+static const int fd_offset = 400;
 
 // We can have 2 strategies here:
 // 1) The user can declare a list of files. Whitelist vs Blacklist?
@@ -45,11 +50,17 @@ static int fd_offset = 400;
 int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   // TODO: check flags and mode!
 
-  // Blacklist
-  char ftp_logs[] = "fftplog";
-  char ftp_dir[] = "ftpshare";
+  char blocklist[][50] = {"fftplog", "ftpshare"};
 
-  if (strstr(pathname, ftp_logs) == NULL && strstr(pathname, ftp_dir) == NULL) {
+  bool knownfile = false;
+  for (size_t i = 0; i < sizeof(blocklist); i++) {
+    if (strstr(pathname, blocklist[i]) != NULL) {
+      knownfile = true;
+      break;
+    }
+  }
+
+  if (knownfile == false) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   }
 
@@ -60,25 +71,18 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
     exit(EXIT_FAILURE);
   }
 
-  zfile_map_size++;
-  assert(zfile_map_size < 400);
-  zbox_file *file = &zfile_map[zfile_map_size];
+  sfile_map_size++;
+  assert(sfile_map_size < SBR_FILES_MAX);
+  char *sfilename = sfile_map[sfile_map_size];
 
-  if (zbox_repo_path_exists(repo, resolved_pathname)) {
-    // Open the existing file.
-    int ret = zbox_repo_open_file(file, repo, resolved_pathname);
-    assert(!ret);
-  } else {
-    // Create the file.
+  if (sqlfs_proc_access(sqlfs, resolved_pathname, F_OK) == -ENOENT) {
+    // If the file doesn't exists create it.
     char *pathname_dup = strdup(resolved_pathname);
     assert(pathname_dup != NULL);
 
-    int ret = zbox_repo_create_dir_all(repo, dirname(pathname_dup));
-    // assert(!ret);
+    int rc = sqlfs_proc_mkdir(sqlfs, dirname(pathname_dup), 0777);
+    assert(!rc);
     free(pathname_dup);
-
-    ret = zbox_repo_create_file(file, repo, resolved_pathname);
-    assert(!ret);
 
     // If file exists in the real FS we need to copy it's content.
     if (access(resolved_pathname, F_OK) != -1) {
@@ -94,79 +98,109 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
       buf[fsize] = '\0';
       fclose(real_file);
 
-      int ret = zbox_file_write(*file, (const unsigned char *)buf, fsize);
-      assert(ret == fsize);
-      ret = zbox_file_finish(*file);
-      assert(!ret);
+      int rc = sqlfs_proc_write(sqlfs, resolved_pathname, buf, fsize, 0, NULL);
+      assert(rc == fsize);
 
       free(buf);
     }
   }
 
-  return zfile_map_size + fd_offset;
+  assert(sqlfs_proc_access(sqlfs, resolved_pathname, F_OK) != -1);
+  // If file exists open the existing file.
+  struct fuse_file_info fi = {0};
+  fi.flags = flags;
+  int rc = sqlfs_proc_open(sqlfs, resolved_pathname, &fi);
+  assert(!rc);
+
+  strncpy(sfilename, resolved_pathname, PATH_MAX);
+  sfile_map_seek[sfile_map_size + fd_offset] = 0;
+
+  return sfile_map_size + fd_offset;
 }
 
 int ilseek(int fd, off_t offset, int whence) {
-  if (fd >= 400) {
-    return zbox_file_seek(zfile_map[fd - fd_offset], offset, whence);
+  if (fd >= fd_offset) {
+    switch (whence) {
+    case SEEK_SET:
+      sfile_map_seek[fd - fd_offset] = offset;
+      break;
+    case SEEK_CUR:
+      sfile_map_seek[fd - fd_offset] = sfile_map_seek[fd - fd_offset] + offset;
+      break;
+    case SEEK_END:
+      assert(false);
+      break;
+    default:
+      assert(false);
+      break;
+    }
+    return sfile_map_seek[fd - fd_offset];
   }
   return real_syscall(SYS_lseek, fd, offset, whence, 0, 0, 0);
 }
 
 ssize_t iread(int fd, void *buf, size_t count) {
-  if (fd >= 400) {
-    return zbox_file_read(buf, count, zfile_map[fd - fd_offset]);
+  if (fd >= fd_offset) {
+    int rc = sqlfs_proc_read(sqlfs, sfile_map[fd - fd_offset], buf, count,
+                             sfile_map_seek[fd - fd_offset], NULL);
+    if (rc > 0) {
+      sfile_map_seek[fd - fd_offset] += rc;
+    }
+    return rc;
   }
   return real_syscall(SYS_read, fd, (long)buf, count, 0, 0, 0);
 }
 
 ssize_t iwrite(int fd, const void *buf, size_t count) {
-  if (fd >= 400) {
-    ssize_t rc = zbox_file_write(zfile_map[fd - fd_offset], buf, count);
-    int ret = zbox_file_finish(zfile_map[fd - fd_offset]);
-    assert(!ret);
+  if (fd >= fd_offset) {
+    int rc = sqlfs_proc_write(sqlfs, sfile_map[fd - fd_offset], buf, count,
+                              sfile_map_seek[fd - fd_offset], NULL);
+    if (rc > 0) {
+      sfile_map_seek[fd - fd_offset] += rc;
+    }
     return rc;
   }
   return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
 }
 
 int iclose(int fd) {
-  if (fd >= 400) {
-    // zbox_file_finish(file);
-    zbox_close_file(zfile_map[fd - fd_offset]);
-    zfile_map_size--;
+  if (fd >= fd_offset) {
+    // TODO: We need a mechanism to recycle FDs.
+    sfile_map_seek[fd - fd_offset] = 0;
+    // TODO: Implement a file state and set it to closed.
     return 0;
   }
   return real_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
 }
 
 int ifstat(int fd, struct stat *statbuf) {
-  if (fd >= 400) {
-    struct zbox_metadata meta;
-    int ret = zbox_file_metadata(&meta, zfile_map[fd - fd_offset]);
-    assert(!ret);
+  if (fd >= fd_offset) {
+    // HINT: Don't use sqlfs_proc_statfs it doesn't support ":memory:".
+    key_attr attr = {0};
+    sqlfs_get_attr(sqlfs, sfile_map[fd - fd_offset], &attr);
 
     statbuf->st_dev = makedev(0, 49);
-    statbuf->st_ino = 3391;
-    statbuf->st_mode = S_IFREG | 0644;
     statbuf->st_nlink = 1;
-    statbuf->st_uid = 1000;
-    statbuf->st_gid = 1000;
     statbuf->st_blksize = 4096;
     statbuf->st_blocks = 8;
-    statbuf->st_size = meta.content_len;
-    // TODO: meta.created_at, meta.modified_at
-    statbuf->st_atime = 1557410314; /* 2019-05-09T13:58:34+0000 */
-    // statbuf->st_atime_nsec = 0;
-    statbuf->st_mtime = 1557399894; /* 2019-05-09T11:04:54+0000 */
-    // statbuf->st_mtime_nsec = 0;
-    statbuf->st_ctime = 1557399894; /* 2019-05-09T11:04:54+0000 */
-    // statbuf->st_ctime_nsec = 0;
+
+    statbuf->st_ino = attr.inode;
+    statbuf->st_mode = attr.mode;
+
+    statbuf->st_uid = attr.uid;
+    statbuf->st_gid = attr.gid;
+
+    statbuf->st_size = attr.size;
+
+    statbuf->st_atime = attr.atime;
+    statbuf->st_mtime = attr.mtime;
+    statbuf->st_ctime = attr.ctime;
     return 0;
   }
   return real_syscall(SYS_fstat, fd, (long)statbuf, 0, 0, 0, 0);
 }
 
+// TODO: Memory only increases. The benchmark-fs is using brk() all the time.
 int iunlink(const char *pathname) {
   char resolved_pathname[PATH_MAX];
   char *rv = realpath(pathname, resolved_pathname);
@@ -175,7 +209,7 @@ int iunlink(const char *pathname) {
     exit(EXIT_FAILURE);
   }
 
-  int rc = zbox_repo_remove_file(resolved_pathname, repo);
+  int rc = sqlfs_proc_unlink(sqlfs, resolved_pathname);
   assert(rc == 0);
 
   return rc;
@@ -183,19 +217,9 @@ int iunlink(const char *pathname) {
 
 // TODO: Support AT_REMOVEDIR
 int iunlinkat(int dirfd, const char *pathname, int flags) {
+  assert(false);
   assert((flags & AT_REMOVEDIR) == 0);
-
-  char resolved_pathname[PATH_MAX];
-  char *rv = realpath(pathname, resolved_pathname);
-  if (rv == NULL && errno != ENOENT) {
-    perror("realpath() failed");
-    exit(EXIT_FAILURE);
-  }
-
-  int rc = zbox_repo_remove_file(resolved_pathname, repo);
-  assert(rc == 0);
-
-  return rc;
+  return iunlink(pathname);
 }
 
 static int sbrsocket = -1;
@@ -331,6 +355,20 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     return iunlink((const char *)arg1);
   } else if (sc_no == SYS_unlinkat) {
     return iunlinkat(arg1, (const char *)arg2, arg3);
+  } else if (sc_no == SYS_statfs) {
+    assert(false);
+  } else if (sc_no == SYS_fstatfs) {
+    assert(false);
+  } else if (sc_no == SYS_truncate) {
+    assert(false);
+  } else if (sc_no == SYS_fsync) {
+    assert(false);
+  } else if (sc_no == SYS_rename) {
+    assert(false);
+  } else if (sc_no == SYS_renameat) {
+    assert(false);
+  } else if (sc_no == SYS_renameat2) {
+    assert(false);
   }
   // Networking
   else if (sc_no == SYS_socket) {
@@ -453,25 +491,17 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
   (*argc)--;
   (*argv)++;
 
-  int ret = zbox_init_env();
-  assert(!ret);
+  // Libsqlfs
+  char *memdb = ":memory:";
+  int rc = sqlfs_open(memdb, &sqlfs);
+  assert(rc);
+  assert(sqlfs != 0);
 
-  // opener
-  zbox_opener opener = zbox_create_opener();
-  zbox_opener_ops_limit(opener, ZBOX_OPS_INTERACTIVE);
-  zbox_opener_mem_limit(opener, ZBOX_MEM_INTERACTIVE);
-  zbox_opener_cipher(opener, ZBOX_CIPHER_XCHACHA);
-  zbox_opener_create(opener, true);
-  zbox_opener_version_limit(opener, 1);
-
-  // open repo
-  ret = zbox_open_repo(&repo, opener, "mem://sabre", "password");
-  assert(!ret);
-  zbox_free_opener(opener);
+  // TODO: assert(sqlfs_close(sqlfs));
 
   // Sockets
   int fd[2];
-  int rc = socketpair(AF_LOCAL, SOCK_STREAM, 0, fd);
+  rc = socketpair(AF_LOCAL, SOCK_STREAM, 0, fd);
   if (rc != 0) {
     perror("socketpair() failed");
     exit(EXIT_FAILURE);
