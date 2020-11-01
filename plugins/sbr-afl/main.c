@@ -34,7 +34,7 @@
 
 #include <sqlfs.h>
 
-#define SBR_FILES_MAX 400
+#define SBR_FILES_MAX 10400
 
 static sqlfs_t *sqlfs = NULL;
 static char sfile_map[SBR_FILES_MAX][PATH_MAX] = {0};
