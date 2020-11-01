@@ -18,7 +18,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/limits.h>
+#include <linux/unistd.h>
 #include <netinet/in.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -120,6 +122,8 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
 
 int ilseek(int fd, off_t offset, int whence) {
   if (fd >= fd_offset) {
+    key_attr attr = {0};
+
     switch (whence) {
     case SEEK_SET:
       sfile_map_seek[fd - fd_offset] = offset;
@@ -128,7 +132,8 @@ int ilseek(int fd, off_t offset, int whence) {
       sfile_map_seek[fd - fd_offset] = sfile_map_seek[fd - fd_offset] + offset;
       break;
     case SEEK_END:
-      assert(false);
+      sqlfs_get_attr(sqlfs, sfile_map[fd - fd_offset], &attr);
+      sfile_map_seek[fd - fd_offset] = attr.size + offset;
       break;
     default:
       assert(false);
