@@ -83,7 +83,7 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
     assert(pathname_dup != NULL);
 
     int rc = sqlfs_proc_mkdir(sqlfs, dirname(pathname_dup), 0777);
-    assert(!rc);
+    assert(rc == 0 || rc == -EEXIST);
     free(pathname_dup);
 
     // If file exists in the real FS we need to copy it's content.
