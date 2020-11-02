@@ -335,6 +335,13 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
   return recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
 }
 
+// Misc
+
+int inanosleep(const struct timespec *req, struct timespec *rem) {
+  nanosleep((const struct timespec[]){{0, 1L}}, NULL);
+  return 0;
+}
+
 long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                     long arg5, long arg6, void *wrapper_sp) {
   if (sc_no == SYS_clone && arg2 != 0) { // clone
@@ -409,6 +416,11 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     return irecvfrom(arg1, (void *)arg2, arg3, arg4, (struct sockaddr *)arg5,
                      (socklen_t *)arg6);
   }
+  // Misc
+  else if (sc_no == SYS_nanosleep) {
+    return inanosleep((const struct timespec *)arg1, (struct timespec *)arg2);
+  }
+
   // TODO: No forking and threading? Think of FTP server and LIST op.
 
   return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
