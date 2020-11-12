@@ -20,6 +20,7 @@
 #include <linux/limits.h>
 #include <linux/unistd.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,8 @@ static int sfile_map_size = -1;
 
 // We skip some fair amount of numbers to avoid collisions.
 static const int fd_offset = 400;
+
+static pthread_mutex_t lock;
 
 static bool starts_with(const char *str, const char *pre) {
   if (!str || !pre)
@@ -344,26 +347,34 @@ ssize_t isendto(int sockfd, const void *buf, size_t len, int flags,
                 const struct sockaddr *dest_addr, socklen_t addrlen) {
   assert(sockfd == childacceptsocket);
 
+  pthread_mutex_lock(&lock);
+
   SbrState st = Send;
-  int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+  ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
   assert(rc == sizeof(SbrState));
 
-  // char msg[1024] = {0};
-  // recv(dbgsbrsocket, msg, sizeof(msg), 0); // sys: recvfrom
-  // dprintf(1, "sbr rcv: %s", msg);
+  rc = sendto(sockfd, buf, len, flags, dest_addr, addrlen);
 
-  return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+  pthread_mutex_unlock(&lock);
+
+  return rc;
 }
 
 ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen) {
   assert(sockfd == childacceptsocket);
 
+  pthread_mutex_lock(&lock);
+
   SbrState st = Recv;
-  int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+  ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
   assert(rc == sizeof(SbrState));
 
-  return recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+  rc = recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+
+  pthread_mutex_unlock(&lock);
+
+  return rc;
 }
 
 // Close is used in both networking and files.
@@ -398,12 +409,16 @@ static bool i_m_forkserver = true;
 
 long iexit_group(int status) {
   if (i_m_forkserver == false) {
+    pthread_mutex_lock(&lock);
+
     SbrState st = ExitGroup;
     int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
     assert(rc == sizeof(SbrState));
   }
 
-  return syscall(SYS_exit_group, status);
+  long rc = syscall(SYS_exit_group, status);
+
+  return rc;
 }
 
 long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
@@ -414,7 +429,6 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
       return clone_syscall(arg1, (void *)arg2, (void *)arg3, (void *)arg4, arg5,
                            ret_addr);
     } else { // fork -> if (arg2 == 0)
-
       long rc = real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
       if (rc == 0) { // We are the afl-forkserver's child
         i_m_forkserver = false;
@@ -596,9 +610,12 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
   (*argc)--;
   (*argv)++;
 
+  int rc = pthread_mutex_init(&lock, NULL);
+  assert(rc == 0);
+
   // Libsqlfs
   char *memdb = ":memory:";
-  int rc = sqlfs_open(memdb, &sqlfs);
+  rc = sqlfs_open(memdb, &sqlfs);
   assert(rc);
   assert(sqlfs != 0);
 
