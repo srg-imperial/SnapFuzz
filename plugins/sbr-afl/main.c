@@ -161,6 +161,8 @@ ssize_t iwrite(int fd, const void *buf, size_t count) {
       sfile_map_seek[fd - fd_offset] += rc;
     }
     return rc;
+  } else if (fd == 1) {
+    return count;
   }
   return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
 }
