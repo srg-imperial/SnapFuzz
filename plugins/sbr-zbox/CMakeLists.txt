@@ -4,9 +4,9 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-list(APPEND SABRE_PLUGIN_C_FLAGS "-Wall" "-Werror" "-Wno-erro=unused-parameter")
+# list(APPEND SABRE_PLUGIN_C_FLAGS "-Wall" "-Werror" "-Wno-erro=unused-parameter")
 
-sabre_add_plugin(sbr-zbox
-  main.c)
+# sabre_add_plugin(sbr-zbox
+#   main.c)
 
-target_link_libraries(sbr-zbox zbox)
+# target_link_libraries(sbr-zbox zbox)
