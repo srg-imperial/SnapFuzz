@@ -21,6 +21,8 @@
 #include <linux/unistd.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -434,13 +436,28 @@ long iexit_group(int status) {
   return rc;
 }
 
+// static int cpus[8] = {0};
+
+long number_of_processors = 0;
+atomic_long last_cpu_used = 0;
+
 long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                     long arg5, long arg6, void *wrapper_sp) {
   if (sc_no == SYS_clone) {
     if (arg2 != 0) { // clone for threads
       void *ret_addr = get_syscall_return_address(wrapper_sp);
-      return clone_syscall(arg1, (void *)arg2, (void *)arg3, (void *)arg4, arg5,
-                           ret_addr);
+      long child_pid = clone_syscall(arg1, (void *)arg2, (void *)arg3,
+                                     (void *)arg4, arg5, ret_addr);
+
+      cpu_set_t c;
+      CPU_ZERO(&c);
+      last_cpu_used++;
+      CPU_SET(last_cpu_used % number_of_processors, &c);
+
+      int rc = sched_setaffinity(child_pid, sizeof(c), &c);
+      assert(rc == 0);
+
+      return child_pid;
     } else { // fork -> if (arg2 == 0)
       long rc = real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
       if (rc == 0) { // We are the afl-forkserver's child
@@ -601,6 +618,13 @@ long handle_rdtsc() {
 }
 #endif // __NX_INTERCEPT_RDTSC
 
+int nprocs() {
+  cpu_set_t cs;
+  CPU_ZERO(&cs);
+  sched_getaffinity(0, sizeof(cs), &cs);
+  return CPU_COUNT(&cs);
+}
+
 void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
               sbr_icept_vdso_callback_fn *vdso_callback,
               sbr_sc_handler_fn *syscall_handler,
@@ -623,6 +647,10 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
 
   int rc = pthread_mutex_init(&lock, NULL);
   assert(rc == 0);
+  // TODO: The following requires __GI___ctype_init with we can't in preinit.
+  // number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
+  number_of_processors = nprocs();
+  assert(number_of_processors > 0);
 
   // Libsqlfs
   char *memdb = ":memory:";
