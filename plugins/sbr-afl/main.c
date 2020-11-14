@@ -44,25 +44,22 @@ static int sfile_map_size = -1;
 // We skip some fair amount of numbers to avoid collisions.
 static const int fd_offset = 400;
 
-// We can have 2 strategies here:
-// 1) The user can declare a list of files. Whitelist vs Blacklist?
-// 2) We can be lazy, load something in memory only if we try to write once.
-// 2a) What if we read the file multiple times? We can speed it up if we go with
-// (1)
+static bool starts_with(const char *str, const char *pre) {
+  if (!str || !pre)
+    return false;
+  size_t lenstr = strlen(str);
+  size_t lenprefix = strlen(pre);
+  if (lenprefix > lenstr)
+    return false;
+  return strncmp(pre, str, lenprefix) == 0;
+}
+
 int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
-  // TODO: check flags and mode!
-
-  char blocklist[][50] = {"fftplog", "ftpshare"};
-
-  bool knownfile = false;
-  for (size_t i = 0; i < sizeof(blocklist); i++) {
-    if (strstr(pathname, blocklist[i]) != NULL) {
-      knownfile = true;
-      break;
-    }
-  }
-
-  if (knownfile == false) {
+  // TODO: What if we read the file multiple times?
+  // TODO: User writes once, closes the file, then readonly.
+  if (!(flags & O_WRONLY) && !(flags & O_RDWR)) {
+    return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
+  } else if (starts_with(pathname, "/dev/")) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   }
 
@@ -483,7 +480,7 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   } else if (sc_no == SYS_getpeername) {
     return igetpeername(arg1, (struct sockaddr *)arg2, (socklen_t *)arg3);
   } else if (sc_no == SYS_select) {
-    assert(false);
+    assert(false); // GNU pth requires select
   } else if (sc_no == SYS_fcntl) {
     assert(false);
   } else if (sc_no == SYS_msgsnd) {
@@ -498,12 +495,14 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   } else if (sc_no == SYS_recvfrom) {
     return irecvfrom(arg1, (void *)arg2, arg3, arg4, (struct sockaddr *)arg5,
                      (socklen_t *)arg6);
-  }
-  // Misc
-  else if (sc_no == SYS_nanosleep) {
+
+    // Misc
+
+  } else if (sc_no == SYS_nanosleep) {
     return inanosleep((const struct timespec *)arg1, (struct timespec *)arg2);
-  } else if (sc_no == SYS_exit) {
-    /* code */
+    // } else if (sc_no == SYS_exit) {
+    //   // TODO: Do we need this?
+    //   return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
   } else if (sc_no == SYS_exit_group) {
     return iexit_group(arg1);
   }
