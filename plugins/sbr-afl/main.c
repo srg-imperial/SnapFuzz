@@ -449,12 +449,16 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
       long child_pid = clone_syscall(arg1, (void *)arg2, (void *)arg3,
                                      (void *)arg4, arg5, ret_addr);
 
+      // TODO: All the following should actually go to the child. But
+      // wrapper_sp?
       cpu_set_t c;
       CPU_ZERO(&c);
       last_cpu_used++;
       CPU_SET(last_cpu_used % number_of_processors, &c);
 
-      int rc = sched_setaffinity(child_pid, sizeof(c), &c);
+      int rc = 0;
+      // dprintf(2, "Taso: %ld", last_cpu_used % number_of_processors);
+      // rc = sched_setaffinity(child_pid, sizeof(c), &c);
       assert(rc == 0);
 
       return child_pid;
@@ -544,9 +548,10 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
 
   } else if (sc_no == SYS_nanosleep) {
     return inanosleep((const struct timespec *)arg1, (struct timespec *)arg2);
-    // } else if (sc_no == SYS_exit) {
-    //   // TODO: Do we need this?
-    //   return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
+  } else if (sc_no == SYS_exit) {
+    // TODO: Do we need this?
+    // last_cpu_used--;
+    return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
   } else if (sc_no == SYS_exit_group) {
     return iexit_group(arg1);
   }
