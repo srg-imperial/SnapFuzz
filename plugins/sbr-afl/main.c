@@ -30,6 +30,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/time.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -46,6 +47,8 @@ static int sfile_map_size = -1;
 static const int fd_offset = 400;
 
 static pthread_mutex_t lock;
+
+static int target_log_sock = -1;
 
 static bool starts_with(const char *str, const char *pre) {
   if (!str || !pre)
@@ -164,7 +167,8 @@ ssize_t iwrite(int fd, const void *buf, size_t count) {
       sfile_map_seek[fd - fd_offset] += rc;
     }
     return rc;
-  } else if (fd == 1) {
+  } else if (fd == STDOUT_FILENO || fd == STDERR_FILENO ||
+             fd == target_log_sock) {
     return count;
   }
   return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
@@ -338,6 +342,13 @@ int igetpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 }
 
 int iconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+  char logpath[] = "/dev/log";
+  if ((addr->sa_family == AF_UNIX) &&
+      (strncmp(((struct sockaddr_un *)addr)->sun_path, logpath,
+               sizeof(logpath)) == 0)) {
+    target_log_sock = sockfd;
+    return 0;
+  }
   // dprintf(2, "Trying to connect. We will refuse\n");
   errno = ECONNREFUSED;
   return -1;
