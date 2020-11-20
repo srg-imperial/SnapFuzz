@@ -147,33 +147,6 @@ int ilseek(int fd, off_t offset, int whence) {
   return real_syscall(SYS_lseek, fd, offset, whence, 0, 0, 0);
 }
 
-ssize_t iread(int fd, void *buf, size_t count) {
-  if (fd >= fd_offset) {
-    int rc = sqlfs_proc_read(sqlfs, sfile_map[fd - fd_offset], buf, count,
-                             sfile_map_seek[fd - fd_offset], NULL);
-    if (rc > 0) {
-      sfile_map_seek[fd - fd_offset] += rc;
-    }
-    return rc;
-  }
-  return real_syscall(SYS_read, fd, (long)buf, count, 0, 0, 0);
-}
-
-ssize_t iwrite(int fd, const void *buf, size_t count) {
-  if (fd >= fd_offset) {
-    int rc = sqlfs_proc_write(sqlfs, sfile_map[fd - fd_offset], buf, count,
-                              sfile_map_seek[fd - fd_offset], NULL);
-    if (rc > 0) {
-      sfile_map_seek[fd - fd_offset] += rc;
-    }
-    return rc;
-  } else if (fd == STDOUT_FILENO || fd == STDERR_FILENO ||
-             fd == target_log_sock) {
-    return count;
-  }
-  return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
-}
-
 int ifstat(int fd, struct stat *statbuf) {
   if (fd >= fd_offset) {
     // HINT: Don't use sqlfs_proc_statfs it doesn't support ":memory:".
@@ -388,6 +361,42 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
   return rc;
 }
 
+int ishutdown(int sockfd, int how) {
+  if (sockfd == AFL_DATA_SOCKET || sockfd == AFL_CTL_SOCKET) {
+    return 0;
+  }
+  return syscall(SYS_shutdown, sockfd, how);
+}
+
+// Common to FS and Net
+
+ssize_t iread(int fd, void *buf, size_t count) {
+  if (fd >= fd_offset) {
+    int rc = sqlfs_proc_read(sqlfs, sfile_map[fd - fd_offset], buf, count,
+                             sfile_map_seek[fd - fd_offset], NULL);
+    if (rc > 0) {
+      sfile_map_seek[fd - fd_offset] += rc;
+    }
+    return rc;
+  }
+  return syscall(SYS_read, fd, buf, count);
+}
+
+ssize_t iwrite(int fd, const void *buf, size_t count) {
+  if (fd >= fd_offset) {
+    int rc = sqlfs_proc_write(sqlfs, sfile_map[fd - fd_offset], buf, count,
+                              sfile_map_seek[fd - fd_offset], NULL);
+    if (rc > 0) {
+      sfile_map_seek[fd - fd_offset] += rc;
+    }
+    return rc;
+  } else if (fd == STDOUT_FILENO || fd == STDERR_FILENO ||
+             fd == target_log_sock) {
+    return count;
+  }
+  return syscall(SYS_write, fd, buf, count);
+}
+
 // Close is used in both networking and files.
 int iclose(int fd) {
   if (fd >= fd_offset) {
@@ -400,13 +409,6 @@ int iclose(int fd) {
     return 0;
   }
   return syscall(SYS_close, fd);
-}
-
-int ishutdown(int sockfd, int how) {
-  if (sockfd == AFL_DATA_SOCKET || sockfd == AFL_CTL_SOCKET) {
-    return 0;
-  }
-  return syscall(SYS_shutdown, sockfd, how);
 }
 
 // Misc
@@ -453,10 +455,6 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     return iopenat(arg1, (const char *)arg2, arg3, arg4);
   } else if (sc_no == SYS_lseek) {
     return ilseek(arg1, arg2, arg3);
-  } else if (sc_no == SYS_read) {
-    return iread(arg1, (void *)arg2, arg3);
-  } else if (sc_no == SYS_write) {
-    return iwrite(arg1, (const void *)arg2, arg3);
   } else if (sc_no == SYS_fstat) {
     return ifstat(arg1, (struct stat *)arg2);
   } else if (sc_no == SYS_unlink) {
@@ -480,10 +478,12 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
 
     // Networking + FS
 
+  } else if (sc_no == SYS_read) {
+    return iread(arg1, (void *)arg2, arg3);
+  } else if (sc_no == SYS_write) {
+    return iwrite(arg1, (const void *)arg2, arg3);
   } else if (sc_no == SYS_close) {
     return iclose(arg1);
-  } else if (sc_no == SYS_shutdown) {
-    return ishutdown(arg1, arg2);
 
     // Networking
 
