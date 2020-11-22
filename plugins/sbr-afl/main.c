@@ -186,7 +186,9 @@ int iunlink(const char *pathname) {
   }
 
   int rc = sqlfs_proc_unlink(sqlfs, resolved_pathname);
-  assert(rc == 0);
+  // We don't check to verify rc as some apps just blindly delete files (e.g.
+  // pid files in /var/run).
+  // assert(rc == 0);
 
   return rc;
 }
