@@ -202,125 +202,94 @@ int iunlinkat(int dirfd, const char *pathname, int flags) {
 
 #define AFL_DATA_SOCKET 200
 #define AFL_CTL_SOCKET (AFL_DATA_SOCKET + 1)
+#define RANDOM_PEER_ACCEPT_PORT 2321
 
 typedef enum { Accept, Send, Recv, ExitGroup } SbrState;
 
-static int aflsocket = AFL_DATA_SOCKET;
-// static int childlistensocket = -1;
-static int childacceptsocket = -1;
-static int dbgsbrsocket = -1;
+static int afl_sock = AFL_DATA_SOCKET;
+static int dbg_sock = -1;
 
-#define CHILD_ACCEPT_PORT 2321
+// We trap the target's listen socket (ie we allow it to connect and we
+// substitute the fd in read/write syscalls) in order to provide realistic
+// configuration options.
+static int target_listen_sock = -1;
 
 // Unfortunately when we use SOCK_SEQPACKET we need to take packages at once.
 static _Thread_local bool pending_buf = false;
 static _Thread_local size_t idx = 0, maxidx = 0;
 static _Thread_local char tmpbuf[250000] = {0};
 
-// TODO: Should we accept more than 1 socket? How will we handle it?
 int isocket(int domain, int type, int protocol) {
-  // TODO: SOCK_NONBLOCK, SOCK_CLOEXEC
-  assert(domain == AF_INET || domain == AF_INET6);
-  assert(type == SOCK_STREAM || type == SOCK_SEQPACKET);
-  assert((type & SOCK_NONBLOCK) == 0);
+  int rc = syscall(SYS_socket, domain, type, protocol);
 
-  return aflsocket;
+  if (domain == AF_INET && type == SOCK_STREAM) {
+    // TODO: Should we accept more than 1 socket? How will we handle it?
+    if (target_listen_sock != -1)
+      return rc; // TODO: ???
+    assert(target_listen_sock == -1);
+    target_listen_sock = rc;
+  }
+
+  return rc;
 }
 
-// TODO: We should ideally keep track of optval between setsockopt and get.
-// int igetsockopt(int sockfd, int level, int optname, void *optval,
-//                 socklen_t *optlen) {
-//   return 0;
-// }
+int igetsockopt(int sockfd, int level, int optname, void *optval,
+                socklen_t *optlen) {
+  if (sockfd == afl_sock)
+    assert(false);
+  return syscall(SYS_getsockopt, sockfd, level, optname, optval, optlen);
+}
 
 int isetsockopt(int sockfd, int level, int optname, const void *optval,
                 socklen_t optlen) {
-  return 0;
+  if (sockfd == afl_sock)
+    assert(false);
+  return syscall(SYS_setsockopt, sockfd, level, optname, optval, optlen);
 }
-
-int ibind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-  return 0;
-}
-
-int ilisten(int sockfd, int backlog) { return 0; }
 
 int iaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-  // TODO: we only support 1 accept.
-  if (childacceptsocket >= 0) {
-    errno = ECONNRESET;
-    return -1;
+  if (sockfd == target_listen_sock) {
+    // TODO: we only support 1 accept.
+    // dprintf(2, "Accept in: fd: %d cs: %d\n", sockfd, cs);
+
+    pthread_mutex_lock(&lock); // We don't really need the lock.
+
+    // Inform AFL that we are ready.
+    SbrState st = Accept;
+    int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+    assert(rc == sizeof(SbrState));
+
+    pthread_mutex_unlock(&lock);
+
+    // dprintf(2, "Accept out: fd: %d cs: %d\n", sockfd, cs);
+    return afl_sock;
   }
-
-  // Initialize a sockaddr_in for the peer
-  struct sockaddr_in peer_addr = {0};
-
-  // Set the contents in the peer's sock_addr.
-  // Make sure the contents will simulate a real client that connects with the
-  // intercepted server, as the server may depend on the contents to make
-  // further decisions. The followings set-up should be fine with Nginx.
-  peer_addr.sin_family = AF_INET;
-  peer_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  peer_addr.sin_port = htons(CHILD_ACCEPT_PORT);
-
-  // copy the initialized peer_addr back to the original sockaddr. Note the
-  // space for the original sockaddr, namely addr, has already been allocated
-  if (addr && addrlen) {
-    memcpy(addr, &peer_addr, sizeof(peer_addr));
-    *addrlen = sizeof(peer_addr);
-  }
-
-  childacceptsocket = dup(aflsocket);
-
-  // Inform afl that we are ready.
-  SbrState st = Accept;
-  int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-  assert(rc == sizeof(SbrState));
-
-  return childacceptsocket;
+  return syscall(SYS_accept, sockfd, addr, addrlen);
 }
 
 int iaccept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
-  return iaccept(sockfd, addr, addrlen);
+  if (sockfd == target_listen_sock) {
+    return iaccept(sockfd, 0, 0);
+  }
+  return syscall(SYS_accept4, sockfd, addr, addrlen, flags);
 }
 
 int igetsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-  struct sockaddr_in target;
-  socklen_t copylen = sizeof(target);
-
-  if (!addr || !addrlen)
-    return -1;
-
-  if (*addrlen < sizeof(target))
-    copylen = *addrlen;
-
-  target.sin_family = AF_INET;
-  target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  target.sin_port = htons(CHILD_ACCEPT_PORT);
-
-  memcpy(addr, &target, copylen);
-  *addrlen = copylen;
-
-  return 0;
+  if (sockfd == afl_sock) {
+    sockfd = target_listen_sock;
+  }
+  return syscall(SYS_getsockname, sockfd, addr, addrlen);
 }
 
 int igetpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-  struct sockaddr_in target;
-  socklen_t copylen = sizeof(target);
-
-  if (!addr || !addrlen)
-    return -1;
-
-  if (*addrlen < sizeof(target))
-    copylen = *addrlen;
-
-  target.sin_family = AF_INET;
-  target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  target.sin_port = htons(CHILD_ACCEPT_PORT + 100);
-
-  memcpy(addr, &target, copylen);
-  *addrlen = copylen;
-
-  return 0;
+  assert(sockfd != target_listen_sock);
+  if (sockfd == afl_sock) {
+    int rc = syscall(SYS_getsockname, target_listen_sock, addr, addrlen);
+    assert(rc == 0);
+    ((struct sockaddr_in *)addr)->sin_port = htons(RANDOM_PEER_ACCEPT_PORT);
+    return 0;
+  }
+  return syscall(SYS_getpeername, sockfd, addr, addrlen);
 }
 
 int iconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
@@ -338,84 +307,99 @@ int iconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 
 ssize_t isendto(int sockfd, const void *buf, size_t len, int flags,
                 const struct sockaddr *dest_addr, socklen_t addrlen) {
-  assert(sockfd == childacceptsocket);
+  if (sockfd == afl_sock) {
+    pthread_mutex_lock(&lock);
 
-  pthread_mutex_lock(&lock);
+    SbrState st = Send;
+    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+    assert(rc == sizeof(SbrState));
 
-  SbrState st = Send;
-  ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-  assert(rc == sizeof(SbrState));
+    rc = syscall(SYS_sendto, sockfd, buf, len, flags, dest_addr, addrlen);
 
-  rc = sendto(sockfd, buf, len, flags, dest_addr, addrlen);
-
-  pthread_mutex_unlock(&lock);
-
-  return rc;
+    pthread_mutex_unlock(&lock);
+    return rc;
+  }
+  return real_syscall(SYS_sendto, sockfd, (long)buf, len, flags,
+                      (long)dest_addr, addrlen);
 }
 
 ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen) {
-  assert(sockfd == childacceptsocket);
+  if (sockfd == afl_sock) {
+    if (pending_buf) {
+      size_t bounded_len = len;
+      assert(maxidx > idx);
+      if (len > maxidx - idx)
+        bounded_len = maxidx - idx;
 
-  if (pending_buf) {
-    size_t bounded_len = len;
-    assert(maxidx > idx);
-    if (len > maxidx - idx)
-      bounded_len = maxidx - idx;
+      memcpy(buf, &tmpbuf[idx], bounded_len);
+      idx += bounded_len;
 
-    memcpy(buf, &tmpbuf[idx], bounded_len);
-    idx += bounded_len;
+      if (idx >= maxidx) {
+        pending_buf = false;
+        idx = 0;
+        maxidx = 0;
+      }
 
-    if (idx >= maxidx) {
-      pending_buf = false;
-      idx = 0;
-      maxidx = 0;
+      // dprintf(2, "recvfrom out buff: len: %ld idx: %d buff: %s\n",
+      // bounded_len, idx, (char *)buf);
+      return bounded_len;
     }
 
-    // dprintf(2, "recvfrom out buff: len: %ld idx: %d buff: %s\n", bounded_len,
-    //         idx, (char *)buf);
-    return bounded_len;
-  }
+    // dprintf(2, "recvfrom in: len: %ld maxidx: %d idx: %d\n", len, maxidx,
+    // idx);
+    pthread_mutex_lock(&lock);
 
-  // dprintf(2, "recvfrom in: len: %ld maxidx: %d idx: %d\n", len, maxidx, idx);
-  pthread_mutex_lock(&lock);
+    SbrState st = Recv;
+    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+    assert(rc == sizeof(SbrState));
 
-  SbrState st = Recv;
-  ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-  assert(rc == sizeof(SbrState));
+    memset(tmpbuf, 0, sizeof(tmpbuf));
+    rc = syscall(SYS_recvfrom, sockfd, tmpbuf, sizeof(tmpbuf), flags, src_addr,
+                 addrlen);
+    if (rc == -EINTR || rc < 0) {
+      pthread_mutex_unlock(&lock);
+      return rc;
+    }
+    if (rc == 0) {
+      // TODO: Emulate SIGTERM
+      syscall(SYS_exit_group, 0);
+    }
+    assert(rc < sizeof(tmpbuf));
 
-  memset(tmpbuf, 0, sizeof(tmpbuf));
-  rc = syscall(SYS_recvfrom, sockfd, tmpbuf, sizeof(tmpbuf), flags, src_addr,
-               addrlen);
-  if (rc == -EINTR || rc < 0) {
+    if (len < rc) {
+      pending_buf = true;
+      maxidx = rc;
+      idx = len;
+      rc = len;
+    }
+
+    memcpy(buf, tmpbuf, rc);
+
     pthread_mutex_unlock(&lock);
+    // dprintf(2, "recvfrom out: len: %ld maxidx: %d idx: %d buff %s\n", len,
+    //         maxidx, idx, (char *)buf);
     return rc;
   }
-  if (rc == 0) {
-    // TODO: Emulate SIGTERM
-    syscall(SYS_exit_group, 0);
-  }
-  assert(rc < sizeof(tmpbuf));
-
-  if (len < rc) {
-    pending_buf = true;
-    maxidx = rc;
-    idx = len;
-    rc = len;
-  }
-
-  memcpy(buf, tmpbuf, rc);
-
-  pthread_mutex_unlock(&lock);
-
-  return rc;
+  return real_syscall(SYS_recvfrom, sockfd, (long)buf, len, flags,
+                      (long)src_addr, (long)addrlen);
 }
 
 int ishutdown(int sockfd, int how) {
-  if (sockfd == AFL_DATA_SOCKET || sockfd == AFL_CTL_SOCKET) {
+  if (sockfd == afl_sock || sockfd == AFL_CTL_SOCKET) {
     return 0;
   }
   return syscall(SYS_shutdown, sockfd, how);
+}
+
+int ifcntl(int fd, int cmd, int arg) {
+  // This should never happen. The target should know anything about this fd.
+  assert(fd != AFL_CTL_SOCKET);
+  if (fd == afl_sock) {
+    // TODO: This needs investigation
+    return 0;
+  }
+  return syscall(SYS_fcntl, fd, cmd, arg);
 }
 
 // Common to FS and Net
@@ -427,6 +411,27 @@ ssize_t iread(int fd, void *buf, size_t count) {
     if (rc > 0) {
       sfile_map_seek[fd - fd_offset] += rc;
     }
+    return rc;
+  } else if (fd == afl_sock) {
+    pthread_mutex_lock(&lock);
+
+    SbrState st = Recv;
+    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+    assert(rc == sizeof(SbrState));
+
+    rc = syscall(SYS_read, fd, buf, count);
+    if (rc == -EINTR || rc < 0) {
+      pthread_mutex_unlock(&lock);
+      return rc;
+    }
+    if (rc == 0) {
+      // TODO: Emulate SIGTERM
+      syscall(SYS_exit_group, 0);
+    }
+
+    pthread_mutex_unlock(&lock);
+    // dprintf(2, "read out: count %ld maxidx %d %s\n", count, maxidx,
+    //         (char *)buf);
     return rc;
   }
   return syscall(SYS_read, fd, buf, count);
@@ -443,6 +448,18 @@ ssize_t iwrite(int fd, const void *buf, size_t count) {
   } else if (fd == STDOUT_FILENO || fd == STDERR_FILENO ||
              fd == target_log_sock) {
     return count;
+  } else if (fd == afl_sock) {
+    pthread_mutex_lock(&lock);
+
+    SbrState st = Send;
+    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+    assert(rc == sizeof(SbrState));
+
+    rc = syscall(SYS_write, fd, buf, count);
+
+    pthread_mutex_unlock(&lock);
+
+    return rc;
   }
   return syscall(SYS_write, fd, buf, count);
 }
@@ -454,8 +471,9 @@ int iclose(int fd) {
     sfile_map_seek[fd - fd_offset] = 0;
     // TODO: Implement a file state and set it to closed.
     return 0;
-  }
-  if (fd == AFL_DATA_SOCKET || fd == AFL_CTL_SOCKET) {
+  } else if (fd == afl_sock) {
+    return 0;
+  } else if (fd == AFL_CTL_SOCKET) {
     return 0;
   }
   return syscall(SYS_close, fd);
@@ -559,14 +577,9 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   } else if (sc_no == SYS_socket) {
     return isocket(arg1, arg2, arg3);
   } else if (sc_no == SYS_getsockopt) {
-    assert(false);
-    // return igetsockopt(arg1, arg2, arg3, (void *)arg4, (socklen_t *)arg5);
+    return igetsockopt(arg1, arg2, arg3, (void *)arg4, (socklen_t *)arg5);
   } else if (sc_no == SYS_setsockopt) {
     return isetsockopt(arg1, arg2, arg3, (const void *)arg4, arg5);
-  } else if (sc_no == SYS_bind) {
-    return ibind(arg1, (const struct sockaddr *)arg2, arg3);
-  } else if (sc_no == SYS_listen) {
-    return ilisten(arg1, arg2);
   } else if (sc_no == SYS_accept) {
     return iaccept(arg1, (struct sockaddr *)arg2, (socklen_t *)arg3);
   } else if (sc_no == SYS_accept4) {
@@ -577,8 +590,10 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     return igetpeername(arg1, (struct sockaddr *)arg2, (socklen_t *)arg3);
   } else if (sc_no == SYS_select) {
     assert(false); // GNU pth requires select
-  } else if (sc_no == SYS_fcntl) {
+  } else if (sc_no == SYS_pselect6) {
     assert(false);
+  } else if (sc_no == SYS_fcntl) {
+    return ifcntl(arg1, arg2, arg3);
   } else if (sc_no == SYS_msgsnd) {
     assert(false);
   } else if (sc_no == SYS_msgrcv) {
@@ -591,6 +606,8 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   } else if (sc_no == SYS_recvfrom) {
     return irecvfrom(arg1, (void *)arg2, arg3, arg4, (struct sockaddr *)arg5,
                      (socklen_t *)arg6);
+  } else if (sc_no == SYS_shutdown) {
+    return ishutdown(arg1, arg2);
 
     // Misc
 
@@ -744,7 +761,7 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
     }
     close(sbr_pair[1]);
 
-    dbgsbrsocket = sbr_pair[0];
+    dbg_sock = sbr_pair[0];
 
     fstat(AFL_CTL_SOCKET, &sockstatus);
     assert(S_ISSOCK(sockstatus.st_mode) == 1);
