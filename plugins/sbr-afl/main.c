@@ -205,6 +205,7 @@ int iunlinkat(int dirfd, const char *pathname, int flags) {
 #define RANDOM_PEER_ACCEPT_PORT 2321
 
 typedef enum { Accept, Send, Recv, ExitGroup } SbrState;
+typedef enum { NoAcceptYet, Accepted, Done } CommsState;
 
 static int afl_sock = AFL_DATA_SOCKET;
 static int dbg_sock = -1;
@@ -213,6 +214,8 @@ static int dbg_sock = -1;
 // substitute the fd in read/write syscalls) in order to provide realistic
 // configuration options.
 static int target_listen_sock = -1;
+
+static _Thread_local CommsState cs = NoAcceptYet;
 
 // Unfortunately when we use SOCK_SEQPACKET we need to take packages at once.
 static _Thread_local bool pending_buf = false;
@@ -251,6 +254,8 @@ int iaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
   if (sockfd == target_listen_sock) {
     // TODO: we only support 1 accept.
     // dprintf(2, "Accept in: fd: %d cs: %d\n", sockfd, cs);
+    assert(cs == NoAcceptYet);
+    cs = Accepted;
 
     pthread_mutex_lock(&lock); // We don't really need the lock.
 
@@ -428,6 +433,50 @@ int ifcntl(int fd, int cmd, int arg) {
   return syscall(SYS_fcntl, fd, cmd, arg);
 }
 
+int iselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+            struct timeval *timeout) {
+  // TODO: We only support reading FDs
+
+  if (FD_ISSET(target_listen_sock, readfds)) {
+    // dprintf(2, "I select 1 %d!\n", cs);
+    if (cs == NoAcceptYet) {
+      // dprintf(2, "I select 1a!\n");
+      FD_CLR(target_listen_sock, readfds);
+
+      struct timeval to = {0}; // Don't wait
+      long rc = syscall(SYS_select, nfds, readfds, writefds, exceptfds, &to);
+
+      FD_SET(target_listen_sock, readfds);
+
+      return rc + 1;
+    } else if (cs == Done) {
+      // TODO: Emulate SIGTERM
+      syscall(SYS_exit_group, 0);
+    } else {
+      // dprintf(2, "I select 1b!\n");
+      FD_CLR(target_listen_sock, readfds);
+    }
+  }
+
+  if (FD_ISSET(afl_sock, readfds)) {
+    // dprintf(2, "I select 2!\n");
+    if (cs == Accepted) {
+      FD_CLR(afl_sock, readfds);
+
+      struct timeval to = {0}; // Don't wait
+      long rc = syscall(SYS_select, nfds, readfds, writefds, exceptfds, &to);
+
+      FD_SET(afl_sock, readfds);
+
+      return rc + 1;
+    } else {
+      FD_CLR(afl_sock, readfds);
+    }
+  }
+
+  return syscall(SYS_select, nfds, readfds, writefds, exceptfds, timeout);
+}
+
 // Common to FS and Net
 
 ssize_t iread(int fd, void *buf, size_t count) {
@@ -498,6 +547,8 @@ int iclose(int fd) {
     // TODO: Implement a file state and set it to closed.
     return 0;
   } else if (fd == afl_sock) {
+    if (cs == Accepted)
+      cs = Done;
     return 0;
   } else if (fd == AFL_CTL_SOCKET) {
     return 0;
@@ -615,7 +666,9 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   } else if (sc_no == SYS_getpeername) {
     return igetpeername(arg1, (struct sockaddr *)arg2, (socklen_t *)arg3);
   } else if (sc_no == SYS_select) {
-    assert(false); // GNU pth requires select
+    // GNU pth requires select
+    return iselect(arg1, (fd_set *)arg2, (fd_set *)arg3, (fd_set *)arg4,
+                   (struct timeval *)arg5);
   } else if (sc_no == SYS_pselect6) {
     assert(false);
   } else if (sc_no == SYS_fcntl) {
