@@ -359,6 +359,14 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
   assert(rc == sizeof(SbrState));
 
   rc = recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+  if (rc == -EINTR || rc < 0) {
+    pthread_mutex_unlock(&lock);
+    return rc;
+  }
+  if (rc == 0) {
+    // TODO: Emulate SIGTERM
+    syscall(SYS_exit_group, 0);
+  }
 
   pthread_mutex_unlock(&lock);
 
