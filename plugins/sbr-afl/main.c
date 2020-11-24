@@ -323,6 +323,19 @@ ssize_t isendto(int sockfd, const void *buf, size_t len, int flags,
                       (long)dest_addr, addrlen);
 }
 
+ssize_t isendmsg(int sockfd, const struct msghdr *msg, int flags) {
+  // TODO: support in the future
+  assert(sockfd != afl_sock);
+  return syscall(SYS_sendmsg, sockfd, msg, flags);
+}
+
+int isendmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen,
+              int flags) {
+  // TODO: support in the future
+  assert(sockfd != afl_sock);
+  return syscall(SYS_sendmsg, sockfd, msgvec, vlen, flags);
+}
+
 ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen) {
   if (sockfd == afl_sock) {
@@ -383,6 +396,19 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
   }
   return real_syscall(SYS_recvfrom, sockfd, (long)buf, len, flags,
                       (long)src_addr, (long)addrlen);
+}
+
+ssize_t irecvmsg(int sockfd, struct msghdr *msg, int flags) {
+  // TODO: support in the future
+  assert(sockfd != afl_sock);
+  return syscall(SYS_recvmsg, sockfd, msg, flags);
+}
+
+int irecvmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags,
+              struct timespec *timeout) {
+  // TODO: support in the future
+  assert(sockfd != afl_sock);
+  return syscall(SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout);
 }
 
 int ishutdown(int sockfd, int how) {
@@ -603,9 +629,18 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   } else if (sc_no == SYS_sendto) {
     return isendto(arg1, (const void *)arg2, arg3, arg4,
                    (struct sockaddr *)arg5, arg6);
+  } else if (sc_no == SYS_sendmsg) {
+    return isendmsg(arg1, (const struct msghdr *)arg2, arg3);
+  } else if (sc_no == SYS_sendmmsg) {
+    return isendmmsg(arg1, (struct mmsghdr *)arg2, arg3, arg4);
   } else if (sc_no == SYS_recvfrom) {
     return irecvfrom(arg1, (void *)arg2, arg3, arg4, (struct sockaddr *)arg5,
                      (socklen_t *)arg6);
+  } else if (sc_no == SYS_recvmsg) {
+    return irecvmsg(arg1, (struct msghdr *)arg2, arg3);
+  } else if (sc_no == SYS_recvmmsg) {
+    return irecvmmsg(arg1, (struct mmsghdr *)arg2, arg3, arg4,
+                     (struct timespec *)arg5);
   } else if (sc_no == SYS_shutdown) {
     return ishutdown(arg1, arg2);
 
