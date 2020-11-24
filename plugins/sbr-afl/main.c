@@ -212,6 +212,11 @@ static int dbgsbrsocket = -1;
 
 #define CHILD_ACCEPT_PORT 2321
 
+// Unfortunately when we use SOCK_SEQPACKET we need to take packages at once.
+static _Thread_local bool pending_buf = false;
+static _Thread_local size_t idx = 0, maxidx = 0;
+static _Thread_local char tmpbuf[250000] = {0};
+
 // TODO: Should we accept more than 1 socket? How will we handle it?
 int isocket(int domain, int type, int protocol) {
   // TODO: SOCK_NONBLOCK, SOCK_CLOEXEC
@@ -352,13 +357,36 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen) {
   assert(sockfd == childacceptsocket);
 
+  if (pending_buf) {
+    size_t bounded_len = len;
+    assert(maxidx > idx);
+    if (len > maxidx - idx)
+      bounded_len = maxidx - idx;
+
+    memcpy(buf, &tmpbuf[idx], bounded_len);
+    idx += bounded_len;
+
+    if (idx >= maxidx) {
+      pending_buf = false;
+      idx = 0;
+      maxidx = 0;
+    }
+
+    // dprintf(2, "recvfrom out buff: len: %ld idx: %d buff: %s\n", bounded_len,
+    //         idx, (char *)buf);
+    return bounded_len;
+  }
+
+  // dprintf(2, "recvfrom in: len: %ld maxidx: %d idx: %d\n", len, maxidx, idx);
   pthread_mutex_lock(&lock);
 
   SbrState st = Recv;
   ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
   assert(rc == sizeof(SbrState));
 
-  rc = recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+  memset(tmpbuf, 0, sizeof(tmpbuf));
+  rc = syscall(SYS_recvfrom, sockfd, tmpbuf, sizeof(tmpbuf), flags, src_addr,
+               addrlen);
   if (rc == -EINTR || rc < 0) {
     pthread_mutex_unlock(&lock);
     return rc;
@@ -367,6 +395,16 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
     // TODO: Emulate SIGTERM
     syscall(SYS_exit_group, 0);
   }
+  assert(rc < sizeof(tmpbuf));
+
+  if (len < rc) {
+    pending_buf = true;
+    maxidx = rc;
+    idx = len;
+    rc = len;
+  }
+
+  memcpy(buf, tmpbuf, rc);
 
   pthread_mutex_unlock(&lock);
 
