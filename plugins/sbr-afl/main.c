@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -38,17 +39,27 @@
 
 #include <sqlfs.h>
 
-#define SBR_FILES_MAX 10400
+#define SBR_FILES_MAX 400
+
+// TODO: Do I realy need this? a) can libsqlfs understand rel paths? b) can I do
+// this as string concat?
+#define TO_ABS_PATH(rel_path, abs_path)                                        \
+  do {                                                                         \
+    char *rv = realpath(rel_path, abs_path);                                   \
+    if (rv == NULL && errno != ENOENT) {                                       \
+      if (errno == ENAMETOOLONG) {                                             \
+        return -1;                                                             \
+      }                                                                        \
+      perror("realpath() failed");                                             \
+      exit(EXIT_FAILURE);                                                      \
+    }                                                                          \
+  } while (0)
 
 extern void __afl_manual_init(void);
 
 static sqlfs_t *sqlfs = NULL;
-static char sfile_map[SBR_FILES_MAX][PATH_MAX] = {0};
-static ssize_t sfile_map_seek[SBR_FILES_MAX] = {0};
-static int sfile_map_size = -1;
-
-// We skip some fair amount of numbers to avoid collisions.
-static const int fd_offset = 400;
+// FDs never used are -1.
+static char mem_fds_open[SBR_FILES_MAX] = {-1};
 
 static pthread_mutex_t lock;
 
@@ -66,128 +77,117 @@ static bool starts_with(const char *str, const char *pre) {
 
 int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   // TODO: What if we read the file multiple times?
-  // TODO: User writes once, closes the file, then readonly.
+
+  // NOTE: If the file doesn't exist, this is UB... For now we just ignore it...
+  // e.g. this won't work: "../fake/../test". Only the first dots will be
+  // resolved.
+  char abs_pathname[PATH_MAX];
+  TO_ABS_PATH(pathname, abs_pathname);
+
+  // If the file exist in memory, retrieve it.
+  key_attr attr = {0};
+  if (sqlfs_get_attr(sqlfs, abs_pathname, &attr) == 1) {
+    if (S_ISREG(attr.mode)) {
+      char id[sizeof(int)] = {0};
+      sqlfs_proc_read(sqlfs, abs_pathname, id, sizeof(int), 0, NULL);
+      int fd = *(int *)(id);
+      if (mem_fds_open[fd] == true) {
+        // NOTE: We can't support opening the same file multiple times.
+        assert(false);
+      }
+      mem_fds_open[fd] = true;
+      return fd;
+    } else {
+      assert(false);
+    }
+  }
+
+  // Else, check if we need to execute a real syscall, or write in memory.
   if (!(flags & O_WRONLY) && !(flags & O_RDWR)) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   } else if (starts_with(pathname, "/dev/")) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   }
 
-  char resolved_pathname[PATH_MAX];
-  char *rv = realpath(pathname, resolved_pathname);
-  if (rv == NULL && errno != ENOENT) {
-    perror("realpath() failed");
-    exit(EXIT_FAILURE);
-  }
+  // If file doesn't exist and we are going to write, create it.
+  char *pathname_dup = strdup(abs_pathname);
+  assert(pathname_dup != NULL);
+  int rc = sqlfs_proc_mkdir(sqlfs, dirname(pathname_dup), 0777);
+  assert(rc == 0 || rc == -EEXIST);
+  free(pathname_dup);
 
-  sfile_map_size++;
-  assert(sfile_map_size < SBR_FILES_MAX);
-  char *sfilename = sfile_map[sfile_map_size];
+  int memflags = 0;
+  if (flags | O_CLOEXEC)
+    memflags = MFD_CLOEXEC;
+  int newfd = memfd_create(abs_pathname, memflags);
+  assert(newfd < SBR_FILES_MAX);
+  mem_fds_open[newfd] = true;
 
-  if (sqlfs_proc_access(sqlfs, resolved_pathname, F_OK) == -ENOENT) {
-    // If the file doesn't exists create it.
-    char *pathname_dup = strdup(resolved_pathname);
-    assert(pathname_dup != NULL);
+  rc = sqlfs_proc_write(sqlfs, abs_pathname, (char *)&newfd, sizeof(int), 0,
+                        NULL);
+  assert(rc == sizeof(int));
 
-    int rc = sqlfs_proc_mkdir(sqlfs, dirname(pathname_dup), 0777);
-    assert(rc == 0 || rc == -EEXIST);
-    free(pathname_dup);
-
-    // If file exists in the real FS we need to copy it's content.
-    if (access(resolved_pathname, F_OK) != -1) {
+  // If file exists in the real FS we need to copy it's content.
+  if (access(abs_pathname, F_OK) == 0) {
+    char buf[8192];
+    int realfile = open(abs_pathname, O_RDONLY);
+    assert(realfile > 0);
+    size_t nread;
+    do {
       // TODO:
       // https://eklausmeier.wordpress.com/2016/02/03/performance-comparison-mmap-versus-read-versus-fread/
-      FILE *real_file = fopen(resolved_pathname, "rb");
-      fseek(real_file, 0, SEEK_END);
-      long fsize = ftell(real_file);
-      rewind(real_file);
-      char *buf = (char *)malloc(sizeof(char) * (fsize + 1));
-      size_t result = fread(buf, sizeof(char), fsize, real_file);
-      assert(result == fsize);
-      buf[fsize] = '\0';
-      fclose(real_file);
+      nread = read(realfile, buf, sizeof(buf));
+      assert(nread >= 0);
+      int nwrite = write(newfd, buf, nread);
+      assert(nwrite == nread);
+    } while (nread > 0);
+    close(realfile);
+  }
 
-      int rc = sqlfs_proc_write(sqlfs, resolved_pathname, buf, fsize, 0, NULL);
-      assert(rc == fsize);
+  return newfd;
+}
 
-      free(buf);
+int icreat(const char *pathname, mode_t mode) {
+  return iopenat(AT_FDCWD, pathname, O_CREAT | O_WRONLY | O_TRUNC, mode);
+}
+
+int i_l_stat(int sysno, const char *pathname, struct stat *statbuf) {
+  char abs_pathname[PATH_MAX];
+  TO_ABS_PATH(pathname, abs_pathname);
+
+  key_attr attr = {0};
+  // HINT: Don't use sqlfs_proc_statfs it doesn't support ":memory:".
+  if (sqlfs_get_attr(sqlfs, abs_pathname, &attr) == 1) {
+    if (S_ISDIR(attr.mode)) {
+      statbuf->st_dev = makedev(0, 49);
+      statbuf->st_nlink = 1;
+      statbuf->st_blksize = 4096;
+      statbuf->st_blocks = 8;
+
+      statbuf->st_ino = attr.inode;
+      statbuf->st_mode = attr.mode;
+      statbuf->st_uid = attr.uid;
+      statbuf->st_gid = attr.gid;
+      statbuf->st_size = attr.size;
+      statbuf->st_atime = attr.atime;
+      statbuf->st_mtime = attr.mtime;
+      statbuf->st_ctime = attr.ctime;
+      return 0;
+    } else {
+      char id[sizeof(int)] = {0};
+      sqlfs_proc_read(sqlfs, abs_pathname, id, sizeof(int), 0, NULL);
+      return real_syscall(SYS_fstat, *(int *)(id), (long)statbuf, 0, 0, 0, 0);
     }
   }
-
-  assert(sqlfs_proc_access(sqlfs, resolved_pathname, F_OK) != -1);
-  // If file exists open the existing file.
-  struct fuse_file_info fi = {0};
-  fi.flags = flags;
-  int rc = sqlfs_proc_open(sqlfs, resolved_pathname, &fi);
-  assert(!rc);
-
-  strncpy(sfilename, resolved_pathname, PATH_MAX);
-  sfile_map_seek[sfile_map_size + fd_offset] = 0;
-
-  return sfile_map_size + fd_offset;
+  return real_syscall(sysno, (long)pathname, (long)statbuf, 0, 0, 0, 0);
 }
 
-int ilseek(int fd, off_t offset, int whence) {
-  if (fd >= fd_offset) {
-    key_attr attr = {0};
-
-    switch (whence) {
-    case SEEK_SET:
-      sfile_map_seek[fd - fd_offset] = offset;
-      break;
-    case SEEK_CUR:
-      sfile_map_seek[fd - fd_offset] = sfile_map_seek[fd - fd_offset] + offset;
-      break;
-    case SEEK_END:
-      sqlfs_get_attr(sqlfs, sfile_map[fd - fd_offset], &attr);
-      sfile_map_seek[fd - fd_offset] = attr.size + offset;
-      break;
-    default:
-      assert(false);
-      break;
-    }
-    return sfile_map_seek[fd - fd_offset];
-  }
-  return real_syscall(SYS_lseek, fd, offset, whence, 0, 0, 0);
-}
-
-int ifstat(int fd, struct stat *statbuf) {
-  if (fd >= fd_offset) {
-    // HINT: Don't use sqlfs_proc_statfs it doesn't support ":memory:".
-    key_attr attr = {0};
-    sqlfs_get_attr(sqlfs, sfile_map[fd - fd_offset], &attr);
-
-    statbuf->st_dev = makedev(0, 49);
-    statbuf->st_nlink = 1;
-    statbuf->st_blksize = 4096;
-    statbuf->st_blocks = 8;
-
-    statbuf->st_ino = attr.inode;
-    statbuf->st_mode = attr.mode;
-
-    statbuf->st_uid = attr.uid;
-    statbuf->st_gid = attr.gid;
-
-    statbuf->st_size = attr.size;
-
-    statbuf->st_atime = attr.atime;
-    statbuf->st_mtime = attr.mtime;
-    statbuf->st_ctime = attr.ctime;
-    return 0;
-  }
-  return real_syscall(SYS_fstat, fd, (long)statbuf, 0, 0, 0, 0);
-}
-
-// TODO: Memory only increases. The benchmark-fs is using brk() all the time.
+// TODO: Memory only increases as we don't ever close the memfd.
 int iunlink(const char *pathname) {
-  char resolved_pathname[PATH_MAX];
-  char *rv = realpath(pathname, resolved_pathname);
-  if (rv == NULL && errno != ENOENT) {
-    perror("realpath() failed");
-    exit(EXIT_FAILURE);
-  }
+  char abs_pathname[PATH_MAX];
+  TO_ABS_PATH(pathname, abs_pathname);
 
-  int rc = sqlfs_proc_unlink(sqlfs, resolved_pathname);
+  int rc = sqlfs_proc_unlink(sqlfs, abs_pathname);
   // We don't check to verify rc as some apps just blindly delete files (e.g.
   // pid files in /var/run).
   // assert(rc == 0);
@@ -200,6 +200,20 @@ int iunlinkat(int dirfd, const char *pathname, int flags) {
   assert(false);
   assert((flags & AT_REMOVEDIR) == 0);
   return iunlink(pathname);
+}
+
+int imkdir(const char *pathname, mode_t mode) {
+  char abs_pathname[PATH_MAX];
+  TO_ABS_PATH(pathname, abs_pathname);
+
+  return sqlfs_proc_mkdir(sqlfs, abs_pathname, mode);
+}
+
+int irmdir(const char *pathname) {
+  char abs_pathname[PATH_MAX];
+  TO_ABS_PATH(pathname, abs_pathname);
+
+  return sqlfs_proc_rmdir(sqlfs, abs_pathname);
 }
 
 #define AFL_DATA_SOCKET 200
@@ -501,14 +515,7 @@ int iselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 // Common to FS and Net
 
 ssize_t iread(int fd, void *buf, size_t count) {
-  if (fd >= fd_offset) {
-    int rc = sqlfs_proc_read(sqlfs, sfile_map[fd - fd_offset], buf, count,
-                             sfile_map_seek[fd - fd_offset], NULL);
-    if (rc > 0) {
-      sfile_map_seek[fd - fd_offset] += rc;
-    }
-    return rc;
-  } else if (fd == afl_sock) {
+  if (fd == afl_sock) {
     if (pending_buf) {
       // dprintf(2, "read in buff: %ld %ld %ld\n", idx, maxidx, count);
       size_t bounded_len = count;
@@ -564,15 +571,7 @@ ssize_t iread(int fd, void *buf, size_t count) {
 }
 
 ssize_t iwrite(int fd, const void *buf, size_t count) {
-  if (fd >= fd_offset) {
-    int rc = sqlfs_proc_write(sqlfs, sfile_map[fd - fd_offset], buf, count,
-                              sfile_map_seek[fd - fd_offset], NULL);
-    if (rc > 0) {
-      sfile_map_seek[fd - fd_offset] += rc;
-    }
-    return rc;
-  } else if (fd == STDOUT_FILENO || fd == STDERR_FILENO ||
-             fd == target_log_sock) {
+  if (fd == STDOUT_FILENO || fd == STDERR_FILENO || fd == target_log_sock) {
     return count;
   } else if (fd == afl_sock) {
     pthread_mutex_lock(&lock);
@@ -592,10 +591,9 @@ ssize_t iwrite(int fd, const void *buf, size_t count) {
 
 // Close is used in both networking and files.
 int iclose(int fd) {
-  if (fd >= fd_offset) {
-    // TODO: We need a mechanism to recycle FDs.
-    sfile_map_seek[fd - fd_offset] = 0;
-    // TODO: Implement a file state and set it to closed.
+  if (mem_fds_open[fd] == true) {
+    lseek(fd, 0, SEEK_SET);
+    mem_fds_open[fd] = false;
     return 0;
   } else if (fd == afl_sock) {
     if (cs == Accepted)
@@ -674,15 +672,17 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
   // TODO: Switch to a switch
   if (sc_no == SYS_openat) {
     return iopenat(arg1, (const char *)arg2, arg3, arg4);
-  } else if (sc_no == SYS_lseek) {
-    return ilseek(arg1, arg2, arg3);
-  } else if (sc_no == SYS_fstat) {
-    return ifstat(arg1, (struct stat *)arg2);
   } else if (sc_no == SYS_unlink) {
     return iunlink((const char *)arg1);
   } else if (sc_no == SYS_unlinkat) {
     return iunlinkat(arg1, (const char *)arg2, arg3);
   } else if (sc_no == SYS_statfs) {
+    assert(false);
+  } else if (sc_no == SYS_stat) {
+    return i_l_stat(SYS_stat, (const char *)arg1, (struct stat *)arg2);
+  } else if (sc_no == SYS_lstat) {
+    return i_l_stat(SYS_lstat, (const char *)arg1, (struct stat *)arg2);
+  } else if (sc_no == SYS_open) {
     assert(false);
   } else if (sc_no == SYS_fstatfs) {
     assert(false);
@@ -696,6 +696,14 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     assert(false);
   } else if (sc_no == SYS_renameat2) {
     assert(false);
+  } else if (sc_no == SYS_creat) {
+    return icreat((const char *)arg1, arg2);
+  } else if (sc_no == SYS_mkdir) {
+    return imkdir((const void *)arg1, arg2);
+  } else if (sc_no == SYS_mkdirat) {
+    assert(false);
+  } else if (sc_no == SYS_rmdir) {
+    return irmdir((const void *)arg1);
 
     // Networking + FS
 
