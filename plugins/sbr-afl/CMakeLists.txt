@@ -4,9 +4,9 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-list(APPEND SABRE_PLUGIN_C_FLAGS "-Wall" "-Werror" "-Wno-erro=unused-parameter")
+list(APPEND SABRE_PLUGIN_C_FLAGS "-Wall" "-Werror" "-Wno-erro=unused-parameter"
+     "-ftls-model=initial-exec")
 
-sabre_add_plugin(sbr-afl
-  main.c)
+sabre_add_plugin(sbr-afl main.c)
 
 target_link_libraries(sbr-afl sqlfs-1.0)
