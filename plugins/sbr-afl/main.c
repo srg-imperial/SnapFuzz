@@ -488,13 +488,34 @@ ssize_t iread(int fd, void *buf, size_t count) {
     }
     return rc;
   } else if (fd == afl_sock) {
+    if (pending_buf) {
+      // dprintf(2, "read in buff: %ld %ld %ld\n", idx, maxidx, count);
+      size_t bounded_len = count;
+      assert(maxidx > idx);
+      if (count > maxidx - idx)
+        bounded_len = maxidx - idx;
+
+      memcpy(buf, &tmpbuf[idx], bounded_len);
+      idx += bounded_len;
+
+      if (idx >= maxidx) {
+        pending_buf = false;
+        idx = 0;
+        maxidx = 0;
+      }
+
+      // dprintf(2, "read out buff: %ld %ld\n", bounded_len, idx);
+      return bounded_len;
+    }
+
     pthread_mutex_lock(&lock);
 
     SbrState st = Recv;
     ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
     assert(rc == sizeof(SbrState));
 
-    rc = syscall(SYS_read, fd, buf, count);
+    memset(tmpbuf, 0, sizeof(tmpbuf));
+    rc = syscall(SYS_read, fd, tmpbuf, sizeof(tmpbuf));
     if (rc == -EINTR || rc < 0) {
       pthread_mutex_unlock(&lock);
       return rc;
@@ -503,10 +524,19 @@ ssize_t iread(int fd, void *buf, size_t count) {
       // TODO: Emulate SIGTERM
       syscall(SYS_exit_group, 0);
     }
+    assert(rc < sizeof(tmpbuf));
+
+    if (count < rc) {
+      pending_buf = true;
+      maxidx = rc;
+      idx = count;
+      rc = count;
+    }
+
+    memcpy(buf, tmpbuf, rc);
 
     pthread_mutex_unlock(&lock);
-    // dprintf(2, "read out: count %ld maxidx %d %s\n", count, maxidx,
-    //         (char *)buf);
+    // dprintf(2, "read out: count %ld maxidx %ld\n", count, maxidx);
     return rc;
   }
   return syscall(SYS_read, fd, buf, count);
