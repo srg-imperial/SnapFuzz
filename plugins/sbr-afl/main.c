@@ -202,6 +202,8 @@ int iunlinkat(int dirfd, const char *pathname, int flags) {
 
 #define AFL_DATA_SOCKET 200
 #define AFL_CTL_SOCKET (AFL_DATA_SOCKET + 1)
+#define FORKSRV_FD_1 198
+#define FORKSRV_FD_2 (FORKSRV_FD_1 + 1)
 #define RANDOM_PEER_ACCEPT_PORT 2321
 
 typedef enum { Accept, Send, Recv, ExitGroup } SbrState;
@@ -417,7 +419,8 @@ int irecvmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags,
 }
 
 int ishutdown(int sockfd, int how) {
-  if (sockfd == afl_sock || sockfd == AFL_CTL_SOCKET) {
+  if (sockfd == afl_sock || sockfd == AFL_CTL_SOCKET ||
+      sockfd == FORKSRV_FD_1 || sockfd == FORKSRV_FD_2) {
     return 0;
   }
   return syscall(SYS_shutdown, sockfd, how);
@@ -580,7 +583,7 @@ int iclose(int fd) {
     if (cs == Accepted)
       cs = Done;
     return 0;
-  } else if (fd == AFL_CTL_SOCKET) {
+  } else if (fd == AFL_CTL_SOCKET || fd == FORKSRV_FD_1 || fd == FORKSRV_FD_2) {
     return 0;
   }
   return syscall(SYS_close, fd);
