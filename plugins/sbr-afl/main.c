@@ -40,6 +40,8 @@
 
 #define SBR_FILES_MAX 10400
 
+extern void __afl_manual_init(void);
+
 static sqlfs_t *sqlfs = NULL;
 static char sfile_map[SBR_FILES_MAX][PATH_MAX] = {0};
 static ssize_t sfile_map_seek[SBR_FILES_MAX] = {0};
@@ -224,6 +226,15 @@ static _Thread_local bool pending_buf = false;
 static _Thread_local size_t idx = 0, maxidx = 0;
 static _Thread_local char tmpbuf[250000] = {0};
 
+static atomic_bool defer_done = false;
+
+static void afl_manual_init() {
+  if (!defer_done) {
+    defer_done = true;
+    __afl_manual_init();
+  }
+}
+
 int isocket(int domain, int type, int protocol) {
   int rc = syscall(SYS_socket, domain, type, protocol);
 
@@ -254,6 +265,12 @@ int isetsockopt(int sockfd, int level, int optname, const void *optval,
 
 int iaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
   if (sockfd == target_listen_sock) {
+    // The first action the sbr-protocol expects is an accept. No deferring
+    // should happen after this.
+    // TODO: We should defer on the first read or write.
+    // TODO: We don't support dump mode yet.
+    afl_manual_init();
+
     // TODO: we only support 1 accept.
     // dprintf(2, "Accept in: fd: %d cs: %d\n", sockfd, cs);
     assert(cs == NoAcceptYet);
@@ -620,6 +637,12 @@ atomic_long last_cpu_used = 0;
 long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                     long arg5, long arg6, void *wrapper_sp) {
   if (sc_no == SYS_clone) {
+    // We are about to clone/fork, we should defer the forkserver here. We
+    // currently cannot defer after a clone/fork as it requires green threading
+    // or thread restoration.
+    // TODO: Compatibility with target's manual call to __afl_manual_init().
+    afl_manual_init();
+
     if (arg2 != 0) { // clone for threads
       void *ret_addr = get_syscall_return_address(wrapper_sp);
       long child_pid = clone_syscall(arg1, (void *)arg2, (void *)arg3,
@@ -870,6 +893,7 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
     dprintf(2, "WARN: SaBRe-afl is running headless.\n");
     // TODO: This is broken!
     // Let's local debug.
+    defer_done = true;
     int sbr_pair[2];
 
     if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sbr_pair) != 0) {
