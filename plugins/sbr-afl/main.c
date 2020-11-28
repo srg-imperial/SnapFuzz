@@ -288,7 +288,8 @@ int iaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     // dprintf(2, "Accept out: fd: %d cs: %d\n", sockfd, cs);
     return afl_sock;
   }
-  return syscall(SYS_accept, sockfd, addr, addrlen);
+  // Note: Some targets might erroneously block in an accept and hang under afl.
+  return syscall(SYS_accept4, sockfd, addr, addrlen, SOCK_NONBLOCK);
 }
 
 int iaccept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
