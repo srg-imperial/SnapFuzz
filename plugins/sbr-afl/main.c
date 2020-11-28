@@ -758,6 +758,16 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
 
   } else if (sc_no == SYS_nanosleep) {
     return inanosleep((const struct timespec *)arg1, (struct timespec *)arg2);
+    // } else if (sc_no == SYS_getpid) {
+    //   assert(false);
+    // } else if (sc_no == SYS_gettid) {
+    //   assert(false);
+    // } else if (sc_no == SYS_getpgid) {
+    //   assert(false);
+    // } else if (sc_no == SYS_getpgrp) {
+    //   assert(false);
+    // } else if (sc_no == SYS_getppid) {
+    //   assert(false);
   } else if (sc_no == SYS_exit) {
     // TODO: Do we need this?
     // last_cpu_used--;
