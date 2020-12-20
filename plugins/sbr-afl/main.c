@@ -20,6 +20,7 @@
 #include <linux/limits.h>
 #include <linux/unistd.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -521,6 +522,73 @@ int iselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   return syscall(SYS_select, nfds, readfds, writefds, exceptfds, timeout);
 }
 
+static long fd_isset(int fd, struct pollfd *fds, nfds_t nfds) {
+  for (nfds_t i = 0; i < nfds; i++) {
+    if (fd == fds[i].fd) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int ipoll(struct pollfd *fds, nfds_t nfds, int timeout) {
+  long pos = -1;
+
+  if ((pos = fd_isset(target_listen_sock, fds, nfds)) != -1) {
+    if (cs == NoAcceptYet) {
+      // dprintf(2, "Poll target_listen_sock NoAcceptYet pos: %ld\n", pos);
+
+      // Skip target_listen_sock.
+      fds[pos].fd = -1;
+
+      // timeout = 0, don't wait.
+      long rc = real_syscall(SYS_poll, (long)fds, nfds, 0, 0, 0, 0);
+
+      // Set target_listen_sock as ready to accept a connection.
+      fds[pos].fd = target_listen_sock;
+      assert(fds[pos].events == POLLIN);
+      fds[pos].revents = POLLIN;
+
+      return rc + 1;
+    } else if (cs == Done) {
+      // TODO: Emulate SIGTERM
+      real_syscall(SYS_exit_group, 0, 0, 0, 0, 0, 0);
+    } else {
+      // dprintf(2, "Poll target_listen_sock Accepted\n");
+      fds[pos].fd = -1;
+      long rc = real_syscall(SYS_poll, (long)fds, nfds, 0, 0, 0, 0);
+      fds[pos].fd = target_listen_sock;
+      return rc;
+    }
+  }
+
+  if ((pos = fd_isset(afl_sock, fds, nfds)) != -1) {
+    if (cs == Accepted) {
+      // dprintf(2, "Poll afl_sock Accepted\n");
+
+      // Skip afl_sock.
+      fds[pos].fd = -1;
+
+      // timeout = 0, don't wait.
+      long rc = real_syscall(SYS_poll, (long)fds, nfds, 0, 0, 0, 0);
+
+      // Set afl_sock as ready to accept a connection.
+      fds[pos].fd = afl_sock;
+      assert(fds[pos].events == POLLIN);
+      fds[pos].revents = POLLIN;
+
+      return rc + 1;
+    } else {
+      fds[pos].fd = -1;
+      long rc = real_syscall(SYS_poll, (long)fds, nfds, 0, 0, 0, 0);
+      fds[pos].fd = afl_sock;
+      return rc;
+    }
+  }
+
+  return real_syscall(SYS_poll, (long)fds, nfds, timeout, 0, 0, 0);
+}
+
 // Common to FS and Net
 
 ssize_t iread(int fd, void *buf, size_t count) {
@@ -743,6 +811,14 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     // GNU pth requires select
     return iselect(arg1, (fd_set *)arg2, (fd_set *)arg3, (fd_set *)arg4,
                    (struct timeval *)arg5);
+  } else if (sc_no == SYS_poll) {
+    return ipoll((struct pollfd *)arg1, arg2, arg3);
+  } else if (sc_no == SYS_ppoll) {
+    assert(false);
+  } else if (sc_no == SYS_epoll_create1) {
+    assert(false);
+  } else if (sc_no == SYS_epoll_create) {
+    assert(false);
   } else if (sc_no == SYS_pselect6) {
     assert(false);
   } else if (sc_no == SYS_fcntl) {
