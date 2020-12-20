@@ -281,8 +281,9 @@ int igetsockopt(int sockfd, int level, int optname, void *optval,
 int isetsockopt(int sockfd, int level, int optname, const void *optval,
                 socklen_t optlen) {
   if (sockfd == afl_sock)
-    assert(false);
-  return syscall(SYS_setsockopt, sockfd, level, optname, optval, optlen);
+    return 0; // TODO: Will this create false issues? e.g. what if a getsockopt?
+  return real_syscall(SYS_setsockopt, sockfd, level, optname, (long)optval,
+                      optlen, 0);
 }
 
 int iaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
