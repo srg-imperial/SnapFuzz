@@ -45,13 +45,18 @@
 // this as string concat?
 #define TO_ABS_PATH(rel_path, abs_path)                                        \
   do {                                                                         \
-    char *rv = realpath(rel_path, abs_path);                                   \
-    if (rv == NULL && errno != ENOENT) {                                       \
-      if (errno == ENAMETOOLONG) {                                             \
-        return -1;                                                             \
+    if (starts_with(rel_path, "/") && strstr(rel_path, "..") == NULL) {        \
+      strncpy(abs_path, rel_path, PATH_MAX);                                   \
+      abs_path[PATH_MAX - 1] = '\0';                                           \
+    } else {                                                                   \
+      char *rv = realpath(rel_path, abs_path);                                 \
+      if (rv == NULL && errno != ENOENT) {                                     \
+        if (errno == ENAMETOOLONG) {                                           \
+          return -1;                                                           \
+        }                                                                      \
+        perror("realpath() failed");                                           \
+        exit(EXIT_FAILURE);                                                    \
       }                                                                        \
-      perror("realpath() failed");                                             \
-      exit(EXIT_FAILURE);                                                      \
     }                                                                          \
   } while (0)
 
@@ -77,6 +82,11 @@ static bool starts_with(const char *str, const char *pre) {
 
 int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   // TODO: What if we read the file multiple times?
+
+  if (starts_with(pathname, "/dev/") || starts_with(pathname, "/etc/")) {
+    assert((flags & O_RDONLY) == O_RDONLY);
+    return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
+  }
 
   // NOTE: If the file doesn't exist, this is UB... For now we just ignore it...
   // e.g. this won't work: "../fake/../test". Only the first dots will be
@@ -104,8 +114,6 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
 
   // Else, check if we need to execute a real syscall, or write in memory.
   if (!(flags & O_WRONLY) && !(flags & O_RDWR)) {
-    return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
-  } else if (starts_with(pathname, "/dev/")) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   }
 
