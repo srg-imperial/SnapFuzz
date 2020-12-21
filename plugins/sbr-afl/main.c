@@ -42,6 +42,10 @@
 
 #include <sqlfs.h>
 
+// TODO: dl_open() is very slow because of SaBRe's mmap interception and syscall
+// discovery.
+// TODO: Support AFL dump mode.
+
 #define SBR_FILES_MAX 400
 
 // TODO: Do I realy need this? a) can libsqlfs understand rel paths? b) can I do
@@ -319,6 +323,25 @@ static void afl_manual_init() {
   }
 }
 
+// The first action the sbr-protocol expects is either a send or a recv. No
+// deferring should happen after this. The earlier deffering that can possibly
+// happen can also a be just before a clone().
+static void notify_a_send() {
+  afl_manual_init();
+
+  SbrState st = Send;
+  ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+  assert(rc == sizeof(SbrState));
+}
+
+static void notify_a_recv() {
+  afl_manual_init();
+
+  SbrState st = Recv;
+  ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
+  assert(rc == sizeof(SbrState));
+}
+
 int isocket(int domain, int type, int protocol) {
   int rc = syscall(SYS_socket, domain, type, protocol);
 
@@ -350,31 +373,17 @@ int isetsockopt(int sockfd, int level, int optname, const void *optval,
 
 int iaccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
   if (sockfd == target_listen_sock) {
-    // The first action the sbr-protocol expects is an accept. No deferring
-    // should happen after this.
-    // TODO: We should defer on the first read or write.
-    // TODO: We don't support dump mode yet.
-    afl_manual_init();
-
     // TODO: we only support 1 accept.
     // dprintf(2, "Accept in: fd: %d cs: %d\n", sockfd, cs);
     assert(cs == NoAcceptYet);
     cs = Accepted;
 
-    pthread_mutex_lock(&lock); // We don't really need the lock.
-
-    // Inform AFL that we are ready.
-    SbrState st = Accept;
-    int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-    assert(rc == sizeof(SbrState));
-
-    pthread_mutex_unlock(&lock);
-
     // dprintf(2, "Accept out: fd: %d cs: %d\n", sockfd, cs);
     return afl_sock;
   }
   // Note: Some targets might erroneously block in an accept and hang under afl.
-  return syscall(SYS_accept4, sockfd, addr, addrlen, SOCK_NONBLOCK);
+  return real_syscall(SYS_accept4, sockfd, (long)addr, (long)addrlen,
+                      SOCK_NONBLOCK, 0, 0);
 }
 
 int iaccept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
@@ -420,11 +429,9 @@ ssize_t isendto(int sockfd, const void *buf, size_t len, int flags,
   if (sockfd == afl_sock) {
     pthread_mutex_lock(&lock);
 
-    SbrState st = Send;
-    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-    assert(rc == sizeof(SbrState));
-
-    rc = syscall(SYS_sendto, sockfd, buf, len, flags, dest_addr, addrlen);
+    notify_a_send();
+    long rc = real_syscall(SYS_sendto, sockfd, (long)buf, len, flags,
+                           (long)dest_addr, addrlen);
 
     pthread_mutex_unlock(&lock);
     return rc;
@@ -473,18 +480,15 @@ ssize_t irecvfrom(int sockfd, void *buf, size_t len, int flags,
     // idx);
     pthread_mutex_lock(&lock);
 
-    SbrState st = Recv;
-    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-    assert(rc == sizeof(SbrState));
+    notify_a_recv();
 
     memset(tmpbuf, 0, sizeof(tmpbuf));
-    rc = syscall(SYS_recvfrom, sockfd, tmpbuf, sizeof(tmpbuf), flags, src_addr,
-                 addrlen);
+    long rc = real_syscall(SYS_recvfrom, sockfd, (long)tmpbuf, sizeof(tmpbuf),
+                           flags, (long)src_addr, (long)addrlen);
     if (rc == -EINTR || rc < 0) {
       pthread_mutex_unlock(&lock);
       return rc;
-    }
-    if (rc == 0) {
+    } else if (rc == 0) {
       // TODO: Emulate SIGTERM
       syscall(SYS_exit_group, 0);
     }
@@ -695,17 +699,14 @@ ssize_t iread(int fd, void *buf, size_t count) {
 
     pthread_mutex_lock(&lock);
 
-    SbrState st = Recv;
-    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-    assert(rc == sizeof(SbrState));
+    notify_a_recv();
 
     memset(tmpbuf, 0, sizeof(tmpbuf));
-    rc = syscall(SYS_read, fd, tmpbuf, sizeof(tmpbuf));
+    long rc = real_syscall(SYS_read, fd, (long)tmpbuf, sizeof(tmpbuf), 0, 0, 0);
     if (rc == -EINTR || rc < 0) {
       pthread_mutex_unlock(&lock);
       return rc;
-    }
-    if (rc == 0) {
+    } else if (rc == 0) {
       // TODO: Emulate SIGTERM
       syscall(SYS_exit_group, 0);
     }
@@ -724,7 +725,7 @@ ssize_t iread(int fd, void *buf, size_t count) {
     // dprintf(2, "read out: count %ld maxidx %ld\n", count, maxidx);
     return rc;
   }
-  return syscall(SYS_read, fd, buf, count);
+  return real_syscall(SYS_read, fd, (long)buf, count, 0, 0, 0);
 }
 
 ssize_t iwrite(int fd, const void *buf, size_t count) {
@@ -733,17 +734,14 @@ ssize_t iwrite(int fd, const void *buf, size_t count) {
   } else if (fd == afl_sock) {
     pthread_mutex_lock(&lock);
 
-    SbrState st = Send;
-    ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-    assert(rc == sizeof(SbrState));
-
-    rc = syscall(SYS_write, fd, buf, count);
+    notify_a_send();
+    long rc = real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
 
     pthread_mutex_unlock(&lock);
 
     return rc;
   }
-  return syscall(SYS_write, fd, buf, count);
+  return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
 }
 
 // Close is used in both networking and files.
