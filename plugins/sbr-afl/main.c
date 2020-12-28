@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -66,6 +67,16 @@ extern void __afl_manual_init(void);
 static sqlfs_t *sqlfs = NULL;
 // FDs never used are -1.
 static char mem_fds_open[SBR_FILES_MAX] = {-1};
+
+struct memfd {
+  int fd;
+  int flags;
+  char *name;
+};
+static struct memfd memfds_preinit[100] = {0};
+static int nmemfds = 0;
+
+static atomic_bool defer_done = false;
 
 static pthread_mutex_t lock;
 
@@ -131,6 +142,13 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   int newfd = memfd_create(abs_pathname, memflags);
   assert(newfd < SBR_FILES_MAX);
   mem_fds_open[newfd] = true;
+  if (!defer_done) {
+    char *cpname = strdup(abs_pathname);
+    assert(cpname != NULL);
+    memfds_preinit[nmemfds] =
+        (struct memfd){.fd = newfd, .flags = memflags, .name = cpname};
+    nmemfds++;
+  }
 
   rc = sqlfs_proc_write(sqlfs, abs_pathname, (char *)&newfd, sizeof(int), 0,
                         NULL);
@@ -249,12 +267,42 @@ static _Thread_local bool pending_buf = false;
 static _Thread_local size_t idx = 0, maxidx = 0;
 static _Thread_local char tmpbuf[250000] = {0};
 
-static atomic_bool defer_done = false;
+static void copy_files(int read_fd, char write_fd) {
+  struct stat stat_buf;
+  off_t offset = 0;
+  fstat(read_fd, &stat_buf);
+  int n = sendfile(write_fd, read_fd, &offset, stat_buf.st_size);
+  assert(n == stat_buf.st_size);
+}
+
+// How memfd dance works:
+// We want to replace the underlying memory file with a copy of it.
+// 1) Before afl_manual_init(), keep track of all memfds.
+// 2) At afl_manual_init(), create a new memfd for each old one.
+// 3) Copy all data from old memfds to the new ones.
+// 4) dup() all old memfds.
+// 5) close() all old memfds.
+// 6) dup2() new memfds to numbers equal to old memfds.
+// We don't close() the new memfds.
+static void memfds_dance() {
+  for (size_t i = 0; i < nmemfds; i++) {
+    struct memfd oldmemfd = memfds_preinit[i];
+
+    int oldfd = oldmemfd.fd;
+    int n_oldfd = dup(oldfd);
+
+    int newfd = memfd_create(oldmemfd.name, oldmemfd.flags);
+    newfd = dup2(newfd, oldfd);
+    copy_files(n_oldfd, newfd);
+  }
+}
 
 static void afl_manual_init() {
   if (!defer_done) {
     defer_done = true;
     __afl_manual_init();
+    if (nmemfds > 0)
+      memfds_dance();
   }
 }
 
