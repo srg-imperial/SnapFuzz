@@ -255,6 +255,8 @@ typedef enum { NoAcceptYet, Accepted, Done } CommsState;
 static int afl_sock = AFL_DATA_SOCKET;
 static int dbg_sock = -1;
 
+static bool i_m_forkserver = true;
+
 // We trap the target's listen socket (ie we allow it to connect and we
 // substitute the fd in read/write syscalls) in order to provide realistic
 // configuration options.
@@ -300,7 +302,13 @@ static void memfds_dance() {
 static void afl_manual_init() {
   if (!defer_done) {
     defer_done = true;
+    pid_t forkserverpid = getpid();
     __afl_manual_init();
+    // AFL's forkerver should never reach this point and thus we are the
+    // afl-forkserver's child.
+    assert(forkserverpid != getpid());
+    i_m_forkserver = false;
+
     if (nmemfds > 0)
       memfds_dance();
   }
@@ -737,8 +745,6 @@ int inanosleep(const struct timespec *req, struct timespec *rem) {
   return 0;
 }
 
-static bool i_m_forkserver = true;
-
 long iexit_group(int status) {
   if (i_m_forkserver == false) {
     pthread_mutex_lock(&lock);
@@ -786,11 +792,7 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
 
       return child_pid;
     } else { // fork -> if (arg2 == 0)
-      long rc = real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
-      if (rc == 0) { // We are the afl-forkserver's child
-        i_m_forkserver = false;
-      }
-      return rc;
+      return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
     }
   }
 
