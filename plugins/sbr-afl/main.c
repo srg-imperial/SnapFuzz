@@ -36,6 +36,7 @@
 #include <sys/sysmacros.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -612,6 +613,25 @@ int ipoll(struct pollfd *fds, nfds_t nfds, int timeout) {
       return rc + 1;
     } else if (cs == Done) {
       // TODO: Emulate SIGTERM
+      sigset_t signal_set;
+      sigemptyset(&signal_set);
+      sigaddset(&signal_set, SIGTERM);
+      sigprocmask(SIG_BLOCK, &signal_set, NULL);
+
+      pid_t wpid;
+      int status = 0;
+      do {
+        wpid = wait(&status);
+        if (wpid <= 0)
+          continue;
+
+        if (WIFSIGNALED(status)) {
+          if (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGILL) {
+            raise(WTERMSIG(status));
+          }
+        }
+      } while (wpid > 0);
+
       real_syscall(SYS_exit_group, 0, 0, 0, 0, 0, 0);
     } else {
       // dprintf(2, "Poll target_listen_sock Accepted\n");
