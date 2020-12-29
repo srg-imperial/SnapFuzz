@@ -309,6 +309,10 @@ static void afl_manual_init() {
     assert(forkserverpid != getpid());
     i_m_forkserver = false;
 
+    // TODO: Will this create issues with kill the forkserver? If the forkserver
+    // gets a (-forkserver_pid, SIGKILL) will this kill it's children?
+    setpgid(0, 0);
+
     if (nmemfds > 0)
       memfds_dance();
   }
