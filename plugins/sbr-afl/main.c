@@ -920,6 +920,11 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     // TODO: Do we need this?
     // last_cpu_used--;
     return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
+  } else if (sc_no == SYS_setsid) {
+    // setsid and setpgid are not supported during snapfuzzing.
+    assert(false);
+  } else if (sc_no == SYS_setpgid) {
+    assert(false);
   }
 
   // TODO: No forking and threading? Think of FTP server and LIST op.
