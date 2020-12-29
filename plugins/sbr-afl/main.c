@@ -254,13 +254,11 @@ int irmdir(const char *pathname) {
 #define FORKSRV_FD_2 (FORKSRV_FD_1 + 1)
 #define RANDOM_PEER_ACCEPT_PORT 2321
 
-typedef enum { Accept, Send, Recv, ExitGroup } SbrState;
+typedef enum { Send, Recv } SbrState;
 typedef enum { NoAcceptYet, Accepted, Done } CommsState;
 
 static int afl_sock = AFL_DATA_SOCKET;
 static int dbg_sock = -1;
-
-static bool i_m_forkserver = true;
 
 // We trap the target's listen socket (ie we allow it to connect and we
 // substitute the fd in read/write syscalls) in order to provide realistic
@@ -312,7 +310,6 @@ static void afl_manual_init() {
     // AFL's forkerver should never reach this point and thus we are the
     // afl-forkserver's child.
     assert(forkserverpid != getpid());
-    i_m_forkserver = false;
 
     // TODO: Will this create issues with kill the forkserver? If the forkserver
     // gets a (-forkserver_pid, SIGKILL) will this kill it's children?
@@ -767,20 +764,6 @@ int inanosleep(const struct timespec *req, struct timespec *rem) {
   return 0;
 }
 
-long iexit_group(int status) {
-  if (i_m_forkserver == false) {
-    pthread_mutex_lock(&lock);
-
-    SbrState st = ExitGroup;
-    int rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
-    assert(rc == sizeof(SbrState));
-  }
-
-  long rc = syscall(SYS_exit_group, status);
-
-  return rc;
-}
-
 // static int cpus[8] = {0};
 
 long number_of_processors = 0;
@@ -937,8 +920,6 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     // TODO: Do we need this?
     // last_cpu_used--;
     return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
-  } else if (sc_no == SYS_exit_group) {
-    return iexit_group(arg1);
   }
 
   // TODO: No forking and threading? Think of FTP server and LIST op.
