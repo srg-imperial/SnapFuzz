@@ -748,6 +748,7 @@ int iclose(int fd) {
     mem_fds_open[fd] = false;
     return 0;
   } else if (fd == afl_sock) {
+    pending_buf = false;
     if (cs == Accepted)
       cs = Done;
     return 0;
