@@ -553,9 +553,12 @@ int iselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
       struct timeval to = {0}; // Don't wait
       long rc = syscall(SYS_select, nfds, readfds, writefds, exceptfds, &to);
 
-      FD_SET(target_listen_sock, readfds);
+      if (rc == 0) {
+        FD_SET(target_listen_sock, readfds);
+        rc++;
+      }
 
-      return rc + 1;
+      return rc;
     } else if (cs == Done) {
       // TODO: Emulate SIGTERM
       syscall(SYS_exit_group, 0);
