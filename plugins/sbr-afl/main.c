@@ -544,7 +544,7 @@ int iselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
             struct timeval *timeout) {
   // TODO: We only support reading FDs
 
-  if (FD_ISSET(target_listen_sock, readfds)) {
+  if (target_listen_sock >= 0 && FD_ISSET(target_listen_sock, readfds)) {
     // dprintf(2, "I select 1 %d!\n", cs);
     if (cs == NoAcceptYet) {
       // dprintf(2, "I select 1a!\n");
