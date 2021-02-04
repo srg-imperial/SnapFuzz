@@ -355,7 +355,7 @@ int isocket(int domain, int type, int protocol) {
 
 int igetsockopt(int sockfd, int level, int optname, void *optval,
                 socklen_t *optlen) {
-  if (sockfd == afl_sock)
+  if (sockfd == afl_sock && optname != SO_SNDBUF)
     assert(false);
   return syscall(SYS_getsockopt, sockfd, level, optname, optval, optlen);
 }
