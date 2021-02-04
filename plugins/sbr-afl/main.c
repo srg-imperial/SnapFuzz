@@ -348,9 +348,22 @@ int isocket(int domain, int type, int protocol) {
       return rc; // TODO: ???
     assert(target_listen_sock == -1);
     target_listen_sock = rc;
+  } else if (domain == AF_INET6 && ((type & SOCK_DGRAM) == SOCK_DGRAM)) {
+    // SOCK_DGRAM doesn't require an accept. Thus we emulate an accept here.
+    target_listen_sock = rc;
+    cs = Accepted;
+    rc = afl_sock;
   }
 
   return rc;
+}
+
+int ibind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+  if (sockfd == afl_sock) {
+    // This will happen only when we are in SOCK_DGRAM.
+    return 0;
+  }
+  return real_syscall(SYS_bind, sockfd, (long)addr, addrlen, 0, 0, 0);
 }
 
 int igetsockopt(int sockfd, int level, int optname, void *optval,
@@ -905,6 +918,8 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                      (struct timespec *)arg5);
   } else if (sc_no == SYS_shutdown) {
     return ishutdown(arg1, arg2);
+  } else if (sc_no == SYS_bind) {
+    return ibind(arg1, (const struct sockaddr *)arg2, arg3);
 
     // Misc
 
