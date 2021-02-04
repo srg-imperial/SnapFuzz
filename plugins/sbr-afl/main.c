@@ -342,7 +342,7 @@ static void notify_a_recv() {
 int isocket(int domain, int type, int protocol) {
   int rc = syscall(SYS_socket, domain, type, protocol);
 
-  if (domain == AF_INET && type == SOCK_STREAM) {
+  if (domain == AF_INET && ((type & SOCK_STREAM) == SOCK_STREAM)) {
     // TODO: Should we accept more than 1 socket? How will we handle it?
     if (target_listen_sock != -1)
       return rc; // TODO: ???
