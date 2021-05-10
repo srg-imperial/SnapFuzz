@@ -342,15 +342,19 @@ static void notify_a_recv() {
 int isocket(int domain, int type, int protocol) {
   int rc = syscall(SYS_socket, domain, type, protocol);
 
+  // Servers might open multiple sockets. The DNS benchmark listens to both
+  // SOCK_STREAM and SOCK_DGRAM which leads to overwriting the first
+  // target_listen_sock from SOCK_STREAM, to the SOCK_DGRAM one. To avoid this
+  // we just follow the first registered socket.
+  // TODO: Should we accept more than 1 socket? How will we handle it?
+  if (target_listen_sock != -1)
+    return rc;
+
   if (domain == AF_INET && ((type & SOCK_STREAM) == SOCK_STREAM)) {
-    // TODO: Should we accept more than 1 socket? How will we handle it?
-    if (target_listen_sock != -1)
-      return rc; // TODO: ???
-    assert(target_listen_sock == -1);
     target_listen_sock = rc;
   } else if (domain == AF_INET6 && ((type & SOCK_DGRAM) == SOCK_DGRAM)) {
-    // SOCK_DGRAM doesn't require an accept. Thus we emulate an accept here.
     target_listen_sock = rc;
+    // SOCK_DGRAM doesn't require an accept(). Thus we emulate an accept here.
     cs = Accepted;
     rc = afl_sock;
   }
