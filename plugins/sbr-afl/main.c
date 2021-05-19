@@ -101,7 +101,13 @@ int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   // TODO: What if we read the file multiple times?
 
   if (starts_with(pathname, "/dev/") || starts_with(pathname, "/etc/")) {
-    assert((flags & O_RDONLY) == O_RDONLY);
+    assert((flags & O_ACCMODE) == O_RDONLY);
+    return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
+  }
+
+  // Optimization: If we are after forkserver and we are just reading a file,
+  // let is just open in the real FS. Don't go through the whole memfd + sqlfs.
+  if (defer_done && ((flags & O_ACCMODE) == O_RDONLY)) {
     return real_syscall(SYS_openat, dirfd, (long)pathname, flags, mode, 0, 0);
   }
 
