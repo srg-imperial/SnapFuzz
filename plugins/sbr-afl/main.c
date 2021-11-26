@@ -40,7 +40,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <sqlfs.h>
+#include "libsqlfs/sqlfs.h"
 
 // TODO: dl_open() is very slow because of SaBRe's mmap interception and syscall
 // discovery.

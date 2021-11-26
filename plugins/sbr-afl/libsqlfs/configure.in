@@ -1,0 +1,107 @@
+AC_INIT([libsqlfs], [1.3.2], [guardian-dev@lists.mayfirst.org], [libsqlfs], [https://guardianproject.info/code/iocipher/])
+AC_CONFIG_SRCDIR([sqlfs.c])
+
+AC_CANONICAL_HOST
+AC_CANONICAL_TARGET
+AC_CONFIG_AUX_DIR([.])
+AC_CONFIG_MACRO_DIR([m4])
+
+AM_INIT_AUTOMAKE([dist-bzip2 -Wall])
+
+AC_PROG_CC
+AC_PROG_CXX
+AC_PROG_LIBTOOL
+# needed for "per-product" flags, i.e. fsx_CFLAGS
+AM_PROG_CC_C_O
+
+AC_DEFINE(_GNU_SOURCE, 1)
+
+# always include debug symbols in compile, they're stripped at install
+CFLAGS="$CFLAGS -g -Wall -Wformat-security -Werror -Werror=format -Werror=format-security -fPIC"
+
+case $host in
+*darwin*)
+        # to prevent this error:
+        # fuse/fuse_compat.h:68:24: error: sys/statfs.h: No such file or directory
+        # we include this:
+        CFLAGS="$CFLAGS -D__FreeBSD__=10"
+        # support Fink
+        if test -d /sw; then
+             CFLAGS="$CFLAGS -I/sw/include"
+             LDFLAGS="$LDFLAGS -I/sw/lib"
+        fi
+        # support MacPorts
+        if test -d /opt/local; then
+             CFLAGS="$CFLAGS -I/opt/local/include"
+             LDFLAGS="$LDFLAGS -I/opt/local/lib"
+        fi
+        ;;
+esac
+
+AC_ARG_WITH([sqlcipher],
+            [AS_HELP_STRING([--with-sqlcipher], [use SQLCipher library for SQLite])],
+            [],
+            [with_sqlcipher=check])
+AS_IF([test "$with_sqlcipher" != "no"],
+          [AC_CHECK_LIB([sqlcipher], [sqlite3_key],
+                [AC_DEFINE([HAVE_LIBSQLCIPHER], [1], [Define if you have SQLCipher])
+                 AC_DEFINE([SQLITE_HAS_CODEC], [1], [The crypto support is known as a codec])
+                 with_sqlcipher=yes],
+                [if test "$with_sqlcipher" != "check"; then
+                   AC_MSG_FAILURE([--with-sqlcipher was given but test failed])
+                fi],
+                [-lpthread])])
+
+AM_CONDITIONAL(WITH_SQLCIPHER, [test "$with_sqlcipher" = "yes"])
+AC_CHECK_LIB(sqlite3, sqlite3_open, [with_sqlite=yes], , [-lpthread])
+
+report_log="$report_log\n database:"
+if test "$with_sqlcipher" = "yes"; then
+   report_log="$report_log\tSQLCipher"
+    AC_SUBST([SQLITE], ["-lsqlcipher"])
+elif test "$with_sqlite" = "yes"; then
+    report_log="$report_log\tSQLite"
+    AC_SUBST([SQLITE], ["-lsqlite3"])
+else
+    echo "Error! SQLCipher or SQLite3 is required!"
+    exit -1
+fi
+
+AC_SYS_LARGEFILE
+
+# fuse?
+AC_ARG_WITH([fuse],
+            [AS_HELP_STRING([--with-fuse], [use FUSE library for client])],
+            [],
+            [with_fuse=check])
+LIBFUSE=
+AS_IF([test "x$with_fuse" != xno],
+	        [AC_CHECK_LIB([fuse], [fuse_main],
+             [AC_SUBST([LIBFUSE], ["-lfuse"])
+               AC_DEFINE([HAVE_LIBFUSE], [1],
+                         [Define if you have fuse])
+               with_fuse=yes
+	       CPPFLAGS="$CPPFLAGS -D_FILE_OFFSET_BITS=64 -D_REENTRANT -DFUSE_USE_VERSION=25"
+	       LIBS="$LIBS -lpthread"
+              ],
+             [if test "x$with_fuse" != xcheck; then
+                 AC_MSG_FAILURE(
+                   [--with-fuse was given but test failed])
+               fi
+             ])])
+AM_CONDITIONAL(WITH_LIBFUSE, [test "$with_fuse" = "yes"])
+report_log="$report_log\n FUSE module:"
+if test "$with_fuse" = "yes"; then
+    report_log="${report_log}\tyes"
+else
+    report_log="${report_log}\tyes"
+fi
+
+AC_CONFIG_FILES(Makefile tests/Makefile libsqlfs.pc)
+
+AC_OUTPUT
+
+echo -e "\n$PACKAGE $VERSION build configuration:\n$report_log"
+echo -e " CFLAGS:\t$CFLAGS"
+echo -e " LDFLAGS:\t$LDFLAGS"
+echo -e "\n\n"
