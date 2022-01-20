@@ -75,11 +75,7 @@ static int target_log_sock = -1;
       }                                                                        \
     }                                                                          \
   } while (0)
-#endif // SF_MEMFS
 
-extern void __afl_manual_init(void);
-
-#ifdef SF_MEMFS
 static sqlfs_t *sqlfs = NULL;
 // FDs never used are -1.
 static char mem_fds_open[SBR_FILES_MAX] = {-1};
@@ -302,7 +298,7 @@ static void copy_files(int read_fd, char write_fd) {
 // 5) close() all old memfds.
 // 6) dup2() new memfds to numbers equal to old memfds.
 // We don't close() the new memfds.
-static void memfds_dance() {
+void memfds_dance() {
   for (size_t i = 0; i < nmemfds; i++) {
     struct memfd oldmemfd = memfds_preinit[i];
 
@@ -315,6 +311,9 @@ static void memfds_dance() {
   }
 }
 #endif // SF_MEMFS
+
+#ifdef SF_SMARTDEFER
+extern void __afl_manual_init(void);
 
 static void afl_manual_init() {
   if (!defer_done) {
@@ -335,12 +334,15 @@ static void afl_manual_init() {
 #endif // SF_MEMFS
   }
 }
+#endif // SF_SMARTDEFER
 
 // The first action the sbr-protocol expects is either a send or a recv. No
-// deferring should happen after this. The earlier deffering that can possibly
+// deferring should happen after this. The earlier deferring that can possibly
 // happen can also a be just before a clone().
 static void notify_a_send() {
+#ifdef SF_SMARTDEFER
   afl_manual_init();
+#endif // SF_SMARTDEFER
 
   SbrState st = Send;
   ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
@@ -348,7 +350,9 @@ static void notify_a_send() {
 }
 
 static void notify_a_recv() {
+#ifdef SF_SMARTDEFER
   afl_manual_init();
+#endif // SF_SMARTDEFER
 
   SbrState st = Recv;
   ssize_t rc = send(AFL_CTL_SOCKET, &st, sizeof(SbrState), MSG_NOSIGNAL);
@@ -825,7 +829,9 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     // currently cannot defer after a clone/fork as it requires green threading
     // or thread restoration.
     // TODO: Compatibility with target's manual call to __afl_manual_init().
+#ifdef SF_SMARTDEFER
     afl_manual_init();
+#endif // SF_SMARTDEFER
 
     if (arg2 != 0) { // clone for threads
       void *ret_addr = get_syscall_return_address(wrapper_sp);

@@ -27,6 +27,12 @@ if(SF_SLEEP)
   list(APPEND SABRE_PLUGIN_C_DEFINES "-DSF_SLEEP")
 endif()
 
+option(SF_SMARTDEFER "Enable Smart Defer" ON)
+if(SF_SMARTDEFER)
+  list(APPEND SABRE_COMPONENT_C_DEFINES "-DSF_SMARTDEFER")
+  list(APPEND SABRE_PLUGIN_C_DEFINES "-DSF_SMARTDEFER")
+endif()
+
 ExternalProject_Add(
   libsqlfs
   URL ${CMAKE_CURRENT_SOURCE_DIR}/libsqlfs
