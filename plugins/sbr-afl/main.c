@@ -40,11 +40,20 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "libsqlfs/sqlfs.h"
-
 // TODO: dl_open() is very slow because of SaBRe's mmap interception and syscall
 // discovery.
 // TODO: Support AFL dump mode.
+
+static atomic_bool defer_done = false;
+
+static pthread_mutex_t lock;
+
+#ifdef SF_STDIO
+static int target_log_sock = -1;
+#endif // SF_STDIO
+
+#ifdef SF_MEMFS
+#include "libsqlfs/sqlfs.h"
 
 #define SBR_FILES_MAX 400
 
@@ -66,9 +75,11 @@
       }                                                                        \
     }                                                                          \
   } while (0)
+#endif // SF_MEMFS
 
 extern void __afl_manual_init(void);
 
+#ifdef SF_MEMFS
 static sqlfs_t *sqlfs = NULL;
 // FDs never used are -1.
 static char mem_fds_open[SBR_FILES_MAX] = {-1};
@@ -80,12 +91,6 @@ struct memfd {
 };
 static struct memfd memfds_preinit[100] = {0};
 static int nmemfds = 0;
-
-static atomic_bool defer_done = false;
-
-static pthread_mutex_t lock;
-
-static int target_log_sock = -1;
 
 static bool starts_with(const char *str, const char *pre) {
   if (!str || !pre)
@@ -253,6 +258,7 @@ int irmdir(const char *pathname) {
 
   return sqlfs_proc_rmdir(sqlfs, abs_pathname);
 }
+#endif // SF_MEMFS
 
 #define AFL_DATA_SOCKET 200
 #define AFL_CTL_SOCKET (AFL_DATA_SOCKET + 1)
@@ -278,6 +284,7 @@ static _Thread_local bool pending_buf = false;
 static _Thread_local size_t idx = 0, maxidx = 0;
 static _Thread_local char tmpbuf[250000] = {0};
 
+#ifdef SF_MEMFS
 static void copy_files(int read_fd, char write_fd) {
   struct stat stat_buf;
   off_t offset = 0;
@@ -307,6 +314,7 @@ static void memfds_dance() {
     copy_files(n_oldfd, newfd);
   }
 }
+#endif // SF_MEMFS
 
 static void afl_manual_init() {
   if (!defer_done) {
@@ -321,8 +329,10 @@ static void afl_manual_init() {
     // gets a (-forkserver_pid, SIGKILL) will this kill it's children?
     setpgid(0, 0);
 
+#ifdef SF_MEMFS
     if (nmemfds > 0)
       memfds_dance();
+#endif // SF_MEMFS
   }
 }
 
@@ -436,8 +446,12 @@ int iconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
   if ((addr->sa_family == AF_UNIX) &&
       (strncmp(((struct sockaddr_un *)addr)->sun_path, logpath,
                sizeof(logpath)) == 0)) {
+#ifdef SF_STDIO
     target_log_sock = sockfd;
     return 0;
+#else
+    return real_syscall(SYS_connect, sockfd, (long)addr, addrlen, 0, 0, 0);
+#endif // SF_STDIO
   }
   // dprintf(2, "Trying to connect. We will refuse\n");
   errno = ECONNREFUSED;
@@ -752,9 +766,7 @@ ssize_t iread(int fd, void *buf, size_t count) {
 }
 
 ssize_t iwrite(int fd, const void *buf, size_t count) {
-  if (fd == STDOUT_FILENO || fd == STDERR_FILENO || fd == target_log_sock) {
-    return count;
-  } else if (fd == afl_sock) {
+  if (fd == afl_sock) {
     pthread_mutex_lock(&lock);
 
     notify_a_send();
@@ -763,23 +775,30 @@ ssize_t iwrite(int fd, const void *buf, size_t count) {
     pthread_mutex_unlock(&lock);
 
     return rc;
+#ifdef SF_STDIO
+  } else if (fd == STDOUT_FILENO || fd == STDERR_FILENO ||
+             fd == target_log_sock) {
+    return count;
+#endif // SF_STDIO
   }
   return real_syscall(SYS_write, fd, (long)buf, count, 0, 0, 0);
 }
 
 // Close is used in both networking and files.
 int iclose(int fd) {
-  if (mem_fds_open[fd] == true) {
-    lseek(fd, 0, SEEK_SET);
-    mem_fds_open[fd] = false;
-    return 0;
-  } else if (fd == afl_sock) {
+  if (fd == afl_sock) {
     pending_buf = false;
     if (cs == Accepted)
       cs = Done;
     return 0;
   } else if (fd == AFL_CTL_SOCKET || fd == FORKSRV_FD_1 || fd == FORKSRV_FD_2) {
     return 0;
+#ifdef SF_MEMFS
+  } else if (mem_fds_open[fd] == true) {
+    lseek(fd, 0, SEEK_SET);
+    mem_fds_open[fd] = false;
+    return 0;
+#endif // SF_MEMFS
   }
   return syscall(SYS_close, fd);
 }
@@ -798,6 +817,8 @@ atomic_long last_cpu_used = 0;
 
 long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                     long arg5, long arg6, void *wrapper_sp) {
+
+  // TODO: Switch to a switch
   if (sc_no == SYS_clone) {
     // We are about to clone/fork, we should defer the forkserver here. We
     // currently cannot defer after a clone/fork as it requires green threading
@@ -826,10 +847,11 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     } else { // fork -> if (arg2 == 0)
       return real_syscall(sc_no, arg1, arg2, arg3, arg4, arg5, arg6);
     }
-  }
 
-  // TODO: Switch to a switch
-  if (sc_no == SYS_openat) {
+    // MemFS
+
+#ifdef SF_MEMFS
+  } else if (sc_no == SYS_openat) {
     return iopenat(arg1, (const char *)arg2, arg3, arg4);
   } else if (sc_no == SYS_unlink) {
     return iunlink((const char *)arg1);
@@ -863,6 +885,7 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     assert(false);
   } else if (sc_no == SYS_rmdir) {
     return irmdir((const void *)arg1);
+#endif // SF_MEMFS
 
     // Networking + FS
 
@@ -1057,11 +1080,13 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
   number_of_processors = nprocs();
   assert(number_of_processors > 0);
 
+#ifdef SF_MEMFS
   // Libsqlfs
   char *memdb = ":memory:";
   rc = sqlfs_open(memdb, &sqlfs);
   assert(rc);
   assert(sqlfs != 0);
+#endif // SF_MEMFS
 
   // TODO: assert(sqlfs_close(sqlfs));
 
