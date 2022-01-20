@@ -21,6 +21,12 @@ if(SF_STDIO)
   list(APPEND SABRE_PLUGIN_C_DEFINES "-DSF_STDIO")
 endif()
 
+option(SF_SLEEP "Enable Virtual Sleeps" ON)
+if(SF_SLEEP)
+  list(APPEND SABRE_COMPONENT_C_DEFINES "-DSF_SLEEP")
+  list(APPEND SABRE_PLUGIN_C_DEFINES "-DSF_SLEEP")
+endif()
+
 ExternalProject_Add(
   libsqlfs
   URL ${CMAKE_CURRENT_SOURCE_DIR}/libsqlfs
