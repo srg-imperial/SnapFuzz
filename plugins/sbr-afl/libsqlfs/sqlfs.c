@@ -62,7 +62,7 @@ struct sqlfs_t
     int transaction_level;
     int in_transaction;
     mode_t default_mode;
-    
+
     sqlite3_stmt *stmts[200];
 #ifndef HAVE_LIBFUSE
     uid_t uid;
@@ -146,7 +146,7 @@ static __inline__ int get_new_inode(void)
 static __inline__ void remove_tail_slash(char *str)
 {
     char *s = str + strlen(str) - 1;
-    while (s != str - 1)
+    while (s + 1 != str)
     {
         if (*s != '/')
             break;
