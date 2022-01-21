@@ -98,6 +98,36 @@ static bool starts_with(const char *str, const char *pre) {
   return strncmp(pre, str, lenprefix) == 0;
 }
 
+static void copy_files(int read_fd, char write_fd) {
+  struct stat stat_buf;
+  off_t offset = 0;
+  fstat(read_fd, &stat_buf);
+  int n = sendfile(write_fd, read_fd, &offset, stat_buf.st_size);
+  assert(n == stat_buf.st_size);
+}
+
+// How memfd dance works:
+// We want to replace the underlying memory file with a copy of it.
+// 1) Before afl_manual_init(), keep track of all memfds.
+// 2) At afl_manual_init(), create a new memfd for each old one.
+// 3) Copy all data from old memfds to the new ones.
+// 4) dup() all old memfds.
+// 5) close() all old memfds.
+// 6) dup2() new memfds to numbers equal to old memfds.
+// We don't close() the new memfds.
+void memfds_dance() {
+  for (size_t i = 0; i < nmemfds; i++) {
+    struct memfd oldmemfd = memfds_preinit[i];
+
+    int oldfd = oldmemfd.fd;
+    int n_oldfd = dup(oldfd);
+
+    int newfd = memfd_create(oldmemfd.name, oldmemfd.flags);
+    newfd = dup2(newfd, oldfd);
+    copy_files(n_oldfd, newfd);
+  }
+}
+
 int iopenat(int dirfd, const char *pathname, int flags, mode_t mode) {
   // TODO: What if we read the file multiple times?
 
@@ -279,38 +309,6 @@ static _Thread_local CommsState cs = NoAcceptYet;
 static _Thread_local bool pending_buf = false;
 static _Thread_local size_t idx = 0, maxidx = 0;
 static _Thread_local char tmpbuf[250000] = {0};
-
-#ifdef SF_MEMFS
-static void copy_files(int read_fd, char write_fd) {
-  struct stat stat_buf;
-  off_t offset = 0;
-  fstat(read_fd, &stat_buf);
-  int n = sendfile(write_fd, read_fd, &offset, stat_buf.st_size);
-  assert(n == stat_buf.st_size);
-}
-
-// How memfd dance works:
-// We want to replace the underlying memory file with a copy of it.
-// 1) Before afl_manual_init(), keep track of all memfds.
-// 2) At afl_manual_init(), create a new memfd for each old one.
-// 3) Copy all data from old memfds to the new ones.
-// 4) dup() all old memfds.
-// 5) close() all old memfds.
-// 6) dup2() new memfds to numbers equal to old memfds.
-// We don't close() the new memfds.
-void memfds_dance() {
-  for (size_t i = 0; i < nmemfds; i++) {
-    struct memfd oldmemfd = memfds_preinit[i];
-
-    int oldfd = oldmemfd.fd;
-    int n_oldfd = dup(oldfd);
-
-    int newfd = memfd_create(oldmemfd.name, oldmemfd.flags);
-    newfd = dup2(newfd, oldfd);
-    copy_files(n_oldfd, newfd);
-  }
-}
-#endif // SF_MEMFS
 
 #ifdef SF_SMARTDEFER
 extern void __afl_manual_init(void);
