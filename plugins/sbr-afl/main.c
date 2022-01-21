@@ -46,8 +46,6 @@
 
 static atomic_bool defer_done = false;
 
-static pthread_mutex_t lock;
-
 #ifdef SF_STDIO
 static int target_log_sock = -1;
 #endif // SF_STDIO
@@ -310,7 +308,8 @@ static _Thread_local bool pending_buf = false;
 static _Thread_local size_t idx = 0, maxidx = 0;
 static _Thread_local char tmpbuf[250000] = {0};
 
-#ifdef SF_SMARTDEFER
+static pthread_mutex_t lock;
+
 extern void __afl_manual_init(void);
 
 static void afl_manual_init() {
@@ -332,7 +331,6 @@ static void afl_manual_init() {
 #endif // SF_MEMFS
   }
 }
-#endif // SF_SMARTDEFER
 
 // The first action the sbr-protocol expects is either a send or a recv. No
 // deferring should happen after this. The earlier deferring that can possibly
@@ -820,6 +818,10 @@ atomic_long last_cpu_used = 0;
 
 long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
                     long arg5, long arg6, void *wrapper_sp) {
+
+#ifndef SF_SMARTDEFER
+  afl_manual_init();
+#endif // SF_SMARTDEFER
 
   // TODO: Switch to a switch
   if (sc_no == SYS_clone) {
