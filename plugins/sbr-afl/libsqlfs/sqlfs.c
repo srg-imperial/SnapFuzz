@@ -2299,7 +2299,7 @@ static int rename_dir_children(sqlfs_t *sqlfs, const char *old, const char *new)
                 char new_path[PATH_MAX];
                 strncpy(new_path, rpath, PATH_MAX);
                 new_path[PATH_MAX-2] = 0; // make sure there is a terminating null and room for "/"
-                strncat(new_path, "/", 1);
+                strcat(new_path, "/");
                 strncat(new_path, child_filename, PATH_MAX - strlen(new_path) - 1);
 
                 i = key_exists(get_sqlfs(sqlfs), new_path, 0);
@@ -3641,7 +3641,7 @@ int sqlfs_init(const char *db_file_name)
 #endif
 
     if (db_file_name)
-        strncpy(default_db_file, db_file_name, sizeof(default_db_file));
+        strncpy(default_db_file, db_file_name, sizeof(default_db_file)-1);
     pthread_key_create(&pthread_key, sqlfs_t_finalize);
     return 0;
 }
