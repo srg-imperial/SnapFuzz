@@ -310,7 +310,7 @@ static _Thread_local char tmpbuf[250000] = {0};
 
 static pthread_mutex_t lock;
 
-extern void __afl_manual_init(void);
+extern void __afl_manual_init(void) __attribute__((weak));
 
 static void afl_manual_init() {
   if (!defer_done) {
