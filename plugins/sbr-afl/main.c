@@ -9,7 +9,9 @@
 #include "sbr_api_defs.h"
 
 #define __STDC_WANT_LIB_EXT2__ 1
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include <libgen.h>
 #undef basename
