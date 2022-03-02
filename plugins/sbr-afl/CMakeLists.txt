@@ -33,16 +33,11 @@ if(SF_SMARTDEFER)
   list(APPEND SABRE_PLUGIN_C_DEFINES "-DSF_SMARTDEFER")
 endif()
 
-ExternalProject_Add(
-  libsqlfs
-  URL ${CMAKE_CURRENT_SOURCE_DIR}/libsqlfs
-  BUILD_IN_SOURCE TRUE
-  CONFIGURE_COMMAND ./autogen.sh
-  COMMAND ./configure
-  INSTALL_COMMAND "")
-ExternalProject_Get_Property(libsqlfs SOURCE_DIR)
-set(LIBSQLFS_STATIC ${SOURCE_DIR}/.libs/libsqlfs-1.0.a)
+add_library(libsqlfs STATIC libsqlfs/sqlfs.c)
+set_property(TARGET libsqlfs PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(libsqlfs PUBLIC "-D_FILE_OFFSET_BITS=64"
+                                           "-D_REENTRANT")
 
 sabre_add_plugin(sbr-afl main.c)
 add_dependencies(sbr-afl libsqlfs)
-target_link_libraries(sbr-afl ${LIBSQLFS_STATIC} sqlite3 pthread)
+target_link_libraries(sbr-afl libsqlfs sqlite3 pthread)
