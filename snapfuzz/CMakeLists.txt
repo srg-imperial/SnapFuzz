@@ -38,6 +38,6 @@ set_property(TARGET libsqlfs PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(libsqlfs PUBLIC "-D_FILE_OFFSET_BITS=64"
                                            "-D_REENTRANT")
 
-sabre_add_plugin(sbr-afl main.c)
-add_dependencies(sbr-afl libsqlfs)
-target_link_libraries(sbr-afl libsqlfs sqlite3 pthread)
+sabre_add_plugin(snapfuzz main.c)
+add_dependencies(snapfuzz libsqlfs)
+target_link_libraries(snapfuzz libsqlfs sqlite3 pthread)
