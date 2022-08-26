@@ -838,7 +838,7 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
     if (arg2 != 0) { // clone for threads
       void *ret_addr = get_syscall_return_address(wrapper_sp);
       long child_pid = clone_syscall(arg1, (void *)arg2, (void *)arg3,
-                                     (void *)arg4, arg5, ret_addr);
+                                     (void *)arg4, arg5, ret_addr, NULL);
 
       // TODO: All the following should actually go to the child. But
       // wrapper_sp?
