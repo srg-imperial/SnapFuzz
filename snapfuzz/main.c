@@ -811,6 +811,11 @@ int inanosleep(const struct timespec *req, struct timespec *rem) {
   nanosleep((const struct timespec[]){{0, 1L}}, NULL);
   return 0;
 }
+int iclock_nanosleep(clockid_t clockid, int flags,
+                     const struct timespec *request, struct timespec *remain) {
+  clock_nanosleep(CLOCK_REALTIME, 0, (const struct timespec[]){{0, 1L}}, NULL);
+  return 0;
+}
 #endif // SF_SLEEP
 
 // static int cpus[8] = {0};
@@ -968,6 +973,9 @@ long handle_syscall(long sc_no, long arg1, long arg2, long arg3, long arg4,
 #ifdef SF_SLEEP
   } else if (sc_no == SYS_nanosleep) {
     return inanosleep((const struct timespec *)arg1, (struct timespec *)arg2);
+  } else if (sc_no == SYS_clock_nanosleep) {
+    return iclock_nanosleep(arg1, arg2, (const struct timespec *)arg3,
+                            (struct timespec *)arg4);
 #endif // SF_SLEEP
     // } else if (sc_no == SYS_getpid) {
     //   assert(false);
